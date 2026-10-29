@@ -2,6 +2,10 @@
 
 a rock paper scissors robot that reads your hand before you finish throwing.
 
+![lilrps beating me 5 rounds in a row](assets/demo.gif)
+
+*what the robot actually sees: 21 points on my hand, redrawn from the saved rounds. the blue move is the robot committing 0.3s after shoot, usually before my hand has finished landing.*
+
 mac webcam -> mediapipe finds 21 points on your hand -> a small model guesses your move from the first few frames -> robot throws the counter
 
 trained on 82 rounds of my hand, it reads the throw about 0.2s before it finishes landing, and beat me 11 out of 11 in a live session on rounds it had never seen.
