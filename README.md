@@ -22,6 +22,8 @@ run it from apple terminal so macos asks for camera permission. space starts a r
 
 after each round the referee says what you threw. if its wrong press r / p / s to fix it, x to bin the round, space to save it and go again. d hides the debug line, q quits.
 
+once you've run `train.py` the robot uses the trained model: at `--cutoff` seconds after shoot (default 0.3) it guesses your move from what it's seen so far and throws the counter. `--cutoff 0.1` makes it commit earlier (harder for it), `--random` turns the model off. every round still gets saved, so playing is also collecting data.
+
 `--player name` tags rounds with whose hand it is (so we can test on hands it's never seen). `--record` saves the session as a video in `clips/`.
 
 ## how the referee works
