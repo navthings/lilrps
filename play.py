@@ -24,6 +24,8 @@ UP_RATIO = 1.1     # a finger is straight if its tip is this much further from t
 
 # (tip, middle knuckle) for index, middle, ring, pinky. thumb is skipped, it points everywhere
 FINGERS = [(8, 6), (12, 10), (16, 14), (20, 18)]
+# wrist + the base of each finger. fingertips jitter a lot (worst on scissors) but the palm stays steady
+PALM = [0, 5, 9, 13, 17]
 
 
 def keypoints(hands, frame):
@@ -44,17 +46,18 @@ def read_pose(kp: np.ndarray) -> str | None:
     wrist = kp[0, :2]
     up = [bool(np.linalg.norm(kp[tip, :2] - wrist) > UP_RATIO * np.linalg.norm(kp[knuckle, :2] - wrist))
           for tip, knuckle in FINGERS]
-    if not any(up):
-        return "rock"
-    if all(up):
+    index, middle, ring, pinky = up
+    # ring + pinky decide it (same split as the 2 servo hand). up = paper, down = rock or scissors
+    if ring and pinky:
         return "paper"
-    if up == [True, True, False, False]:
-        return "scissors"
+    if not ring and not pinky:
+        return "scissors" if index or middle else "rock"
     return None
 
 
 def motion(a: np.ndarray, b: np.ndarray) -> float:
-    """How far the hand moved between two frames (average over the 21 points)."""
+    """How far the palm moved between two frames."""
+    a, b = a[PALM], b[PALM]
     if np.isnan(a).any() or np.isnan(b).any():
         return float("inf")
     return float(np.linalg.norm(b[:, :2] - a[:, :2], axis=1).mean())
@@ -112,8 +115,8 @@ def main():
     ROUNDS.mkdir(parents=True, exist_ok=True)
     counts = count_rounds()
 
-    # the classic cpu hand model (mediapipe 0.10.14). the newer tasks api crashes on some macs trying to use metal
-    hands = mp.solutions.hands.Hands(max_num_hands=1, model_complexity=0,
+    # the classic cpu hand model (mediapipe 0.10.14), full size since the lite one kept losing scissors. the newer tasks api crashes on some macs trying to use metal
+    hands = mp.solutions.hands.Hands(max_num_hands=1, model_complexity=1,
                                      min_detection_confidence=0.5, min_tracking_confidence=0.5)
     draw = mp.solutions.drawing_utils
     cap = open_camera(args.camera)
@@ -124,16 +127,16 @@ def main():
     fps, last = 0.0, time.perf_counter()
     started = shoot_at = 0.0
     times, frames = [], []
-    streak, streak_pose = 0, None
+    seen, last_kp = [], None
     rnd = {}
 
     def start_round():
-        nonlocal state, started, shoot_at, times, frames, streak, streak_pose
+        nonlocal state, started, shoot_at, times, frames, seen, last_kp
         state = "count"
         started = time.perf_counter()
         shoot_at = started + 3 * BEAT
         times, frames = [], []
-        streak, streak_pose = 0, None
+        seen, last_kp = [], None
 
     def save_round():
         name = f"{args.player}_{int(time.time() * 1000)}.npz"
@@ -169,20 +172,23 @@ def main():
             frames.append(kp)
             put(frame, WORDS[min(int((now - started) / BEAT), 3)], 90, 2.2)
 
-            # the round is done once the hand has stopped and held the same move for a few frames
-            pose = read_pose(kp)
-            still = len(frames) > 1 and motion(frames[-2], kp) < STILL
-            if t >= LOOK_FROM and still and pose:
-                streak = streak + 1 if pose == streak_pose else 1
-                streak_pose = pose
-            else:
-                streak, streak_pose = 0, None
+            # the round is done once the palm has stopped and the move held for a few frames.
+            # frames where mediapipe lost the hand are skipped, not counted as moving
+            landed = None
+            if not np.isnan(kp).any():
+                pose = read_pose(kp)
+                still = last_kp is not None and motion(last_kp, kp) < STILL
+                seen = seen + [(pose, t)] if t >= LOOK_FROM and still and pose else []
+                last_kp = kp
+                recent = [p for p, _ in seen[-STABLE:]]
+                if len(recent) == STABLE:
+                    top = max(set(recent), key=recent.count)
+                    if recent.count(top) >= STABLE - 1:  # one glitchy frame is allowed
+                        landed = top
 
-            if streak >= STABLE or t > TIMEOUT:
-                done = streak >= STABLE
-                rnd = {"referee": streak_pose if done else None,
-                       "label": streak_pose if done else None,
-                       "done_t": times[-STABLE] if done else None,
+            if landed or t > TIMEOUT:
+                rnd = {"referee": landed, "label": landed,
+                       "done_t": seen[-STABLE][1] if landed else None,
                        "robot": robot_move(frames)}
                 state = "result"
 

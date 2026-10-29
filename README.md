@@ -26,9 +26,9 @@ after each round the referee says what you threw. if its wrong press r / p / s t
 
 ## how the referee works
 
-no ml, just geometry. a finger counts as straight if its tip is further from the wrist than its middle knuckle. 0 straight = rock, index + middle = scissors, all 4 = paper. the thumb is ignored.
+no ml, just geometry. a finger counts as straight if its tip is further from the wrist than its middle knuckle. ring + pinky decide most of it: both straight = paper, both curled = rock or scissors, and index/middle split those two. the thumb is ignored.
 
-the round is "done" the first moment after shoot where the hand stops moving and holds the same move for 3 frames. that timestamp is the finish line the predictor has to beat.
+the round is "done" the first moment after shoot where the palm stops moving and the same move shows up in at least 2 of 3 frames. frames where mediapipe loses the hand are skipped. that timestamp is the finish line the predictor has to beat.
 
 if the referee keeps getting it wrong, tune `STILL` and `UP_RATIO` at the top of `play.py`. the debug line shows the live motion number.
 
