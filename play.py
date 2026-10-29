@@ -24,6 +24,7 @@ STABLE = 3         # frames
 LOOK_FROM = -0.2   # seconds
 TIMEOUT = 1.5      # seconds
 UP_RATIO = 1.1
+REC_FPS = 15
 
 # tip/knuckle
 FINGERS = [(8, 6), (12, 10), (16, 14), (20, 18)]
@@ -134,7 +135,7 @@ def main():
     writer = None
     state = "idle"
     debug = not args.record
-    shown = 0
+    rec_t = 0.0
     fps, last = 0.0, time.perf_counter()
     started = shoot_at = 0.0
     times, frames = [], []
@@ -233,14 +234,17 @@ def main():
             put(frame, f"saved  rock {c['rock']}  paper {c['paper']}  scissors {c['scissors']}",
                 frame.shape[0] - 25, 0.6, (180, 255, 180))
 
-        shown += 1
-        if args.record and shown > 30:
+        if args.record:
             if writer is None:
                 CLIPS.mkdir(exist_ok=True)
                 path = CLIPS / f"session_{int(time.time())}.mp4"
-                writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), round(fps),
+                writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), REC_FPS,
                                          (frame.shape[1], frame.shape[0]))
-            writer.write(frame)
+                rec_t = now
+            # realtime
+            while rec_t <= now:
+                writer.write(frame)
+                rec_t += 1 / REC_FPS
 
         cv2.imshow("lilrps", frame)
         key = cv2.waitKey(1) & 0xFF
