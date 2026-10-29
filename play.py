@@ -115,9 +115,10 @@ def main():
     ROUNDS.mkdir(parents=True, exist_ok=True)
     counts = count_rounds()
 
-    # the classic cpu hand model (mediapipe 0.10.14), full size since the lite one kept losing scissors. the newer tasks api crashes on some macs trying to use metal
-    hands = mp.solutions.hands.Hands(max_num_hands=1, model_complexity=1,
-                                     min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    # the classic cpu hand model (mediapipe 0.10.14). the newer tasks api crashes on some macs trying to use metal.
+    # lite model: the full one dropped to 15fps and lost fists. low confidences so it grabs a fist back quickly
+    hands = mp.solutions.hands.Hands(max_num_hands=1, model_complexity=0,
+                                     min_detection_confidence=0.3, min_tracking_confidence=0.3)
     draw = mp.solutions.drawing_utils
     cap = open_camera(args.camera)
 
