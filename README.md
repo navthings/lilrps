@@ -35,3 +35,11 @@ if the referee keeps getting it wrong, tune `STILL` and `UP_RATIO` at the top of
 ## data
 
 each round is one `.npz` in `data/rounds/`: every frame's 21 keypoints, times relative to shoot, the label, what the referee said, and when the hand landed.
+
+## train
+
+```
+.venv/bin/python train.py
+```
+
+trains a small mlx network on your saved rounds and scores it with 5-fold cross validation (every round is tested by a model that never trained on it). prints accuracy at each cutoff from 0.4s before shoot to 0.7s after, and saves `results/accuracy.png`, `results/loss.png` and the model in `results/predictor.safetensors`.
