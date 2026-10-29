@@ -15,9 +15,9 @@ ROUNDS = HERE / "data" / "rounds"
 RESULTS = HERE / "results"
 MOVES = ["rock", "paper", "scissors"]
 
-W = 8                                              # how many recent frames the model sees
-EVAL_AT = np.round(np.arange(-0.4, 0.71, 0.1), 2)  # cutoffs to score, seconds after "shoot"
-TRAIN_AT = np.arange(-0.4, 0.8, 0.025)             # cutoffs to make training examples from
+W = 8  # frames
+EVAL_AT = np.round(np.arange(-0.4, 0.71, 0.1), 2)  # score
+TRAIN_AT = np.arange(-0.4, 0.8, 0.025)  # train
 
 
 def load_rounds() -> list[dict]:
@@ -30,13 +30,11 @@ def load_rounds() -> list[dict]:
 
 
 def normalise(kp: np.ndarray) -> np.ndarray:
-    # move the wrist to (0, 0) and scale by palm length, so where your hand is and how big it looks dont matter
     xy = kp[:, :2] - kp[0, :2]
     return (xy / (np.linalg.norm(xy[9]) + 1e-6)).ravel()
 
 
 def window(rnd: dict, cutoff: float) -> np.ndarray:
-    """The last W frames the model is allowed to see at this cutoff, zero padded at the front."""
     seen = [normalise(k) for k, t in zip(rnd["kp"], rnd["t"]) if t <= cutoff and not np.isnan(k).any()][-W:]
     x = np.zeros((W, 42), dtype=np.float32)
     if seen:
@@ -61,12 +59,11 @@ class Predictor(nn.Module):
 
 
 def train(rounds: list[dict], steps: int, val: list[dict] | None = None, seed: int = 0):
-    """Train one predictor. Returns the model and its loss history (step, train loss, val loss)."""
     mx.random.seed(seed)
     x, y = make_set(rounds, TRAIN_AT)
     vx, vy = make_set(val, TRAIN_AT) if val else (None, None)
 
-    # rare moves count for more, otherwise it learns to never say rock
+    # balance
     counts = np.bincount(np.array(y), minlength=3).astype(np.float32)
     class_w = mx.array(counts.sum() / (3 * np.maximum(counts, 1)))
 
@@ -107,7 +104,7 @@ def main():
     print(f"{len(rounds)} rounds: " + ", ".join(f"{m} {c}" for m, c in zip(MOVES, counts)))
     RESULTS.mkdir(exist_ok=True)
 
-    # cross validation: every round gets scored by a model that never trained on it
+    # crossval
     rng = np.random.default_rng(0)
     folds = np.array_split(rng.permutation(len(rounds)), args.folds)
     acc = np.zeros((args.folds, len(EVAL_AT)))
@@ -132,7 +129,6 @@ def main():
         "rounds": len(rounds), "counts": dict(zip(MOVES, counts.tolist())), "median_landing": landed,
     }, indent=2))
 
-    # the chart: how accuracy climbs as the model gets to see more of the throw
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(EVAL_AT, mean * 100, marker="o", color="#c2410c")
     ax.axhline(100 / 3, ls="--", color="grey", lw=1, label="random guess (33%)")
@@ -153,7 +149,7 @@ def main():
     fig.tight_layout()
     fig.savefig(RESULTS / "loss.png", dpi=150)
 
-    # the model the game will actually use is trained on every round
+    # final
     model, _ = train(rounds, args.steps)
     model.save_weights(str(RESULTS / "predictor.safetensors"))
     print(f"\nsaved charts + model to {RESULTS.relative_to(HERE)}/")
