@@ -24,6 +24,8 @@ STABLE = 3         # frames
 LOOK_FROM = -0.2   # seconds
 TIMEOUT = 1.5      # seconds
 UP_RATIO = 1.1
+SPREAD = 0.8       # v gap / palm width
+DARK = 70          # brightness
 REC_FPS = 15
 
 # tip/knuckle
@@ -50,6 +52,9 @@ def read_pose(kp: np.ndarray) -> str | None:
     index, middle, ring, pinky = up
     if ring and pinky:
         return "paper"
+    # v
+    if np.linalg.norm(kp[8, :2] - kp[12, :2]) > SPREAD * np.linalg.norm(kp[5, :2] - kp[17, :2]):
+        return "scissors"
     if not ring and not pinky:
         return "scissors" if index or middle else "rock"
     return None
@@ -229,7 +234,9 @@ def main():
         if debug:
             m = motion(frames[-2], frames[-1]) if state == "count" and len(frames) > 1 else 0.0
             live = read_pose(kp) or "-"
-            put(frame, f"fps {fps:.0f}   motion {m:.3f}   sees {live}", frame.shape[0] - 60, 0.6, (180, 255, 180))
+            light = frame.mean()
+            put(frame, f"fps {fps:.0f}   motion {m:.3f}   sees {live}   light {light:.0f}{' (too dark)' if light < DARK else ''}",
+                frame.shape[0] - 60, 0.6, (180, 255, 180) if light >= DARK else (80, 80, 255))
             c = counts
             put(frame, f"saved  rock {c['rock']}  paper {c['paper']}  scissors {c['scissors']}",
                 frame.shape[0] - 25, 0.6, (180, 255, 180))
