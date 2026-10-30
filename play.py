@@ -25,6 +25,7 @@ LOOK_FROM = -0.2   # seconds
 TIMEOUT = 1.5      # seconds
 UP_RATIO = 1.1
 SPREAD = 0.8       # v gap / palm width
+FOLDED = 0.9       # curled tips fold back
 DARK = 70          # brightness
 REC_FPS = 15
 
@@ -47,13 +48,14 @@ def read_pose(kp: np.ndarray) -> str | None:
     if np.isnan(kp).any():
         return None
     wrist = kp[0, :2]
-    up = [bool(np.linalg.norm(kp[tip, :2] - wrist) > UP_RATIO * np.linalg.norm(kp[knuckle, :2] - wrist))
-          for tip, knuckle in FINGERS]
-    index, middle, ring, pinky = up
+    ratio = [np.linalg.norm(kp[tip, :2] - wrist) / np.linalg.norm(kp[knuckle, :2] - wrist)
+             for tip, knuckle in FINGERS]
+    index, middle, ring, pinky = [r > UP_RATIO for r in ratio]
     if ring and pinky:
         return "paper"
-    # v
-    if np.linalg.norm(kp[8, :2] - kp[12, :2]) > SPREAD * np.linalg.norm(kp[5, :2] - kp[17, :2]):
+    # v, not fist
+    spread = np.linalg.norm(kp[8, :2] - kp[12, :2]) / np.linalg.norm(kp[5, :2] - kp[17, :2])
+    if spread > SPREAD and min(ratio[:2]) > FOLDED:
         return "scissors"
     if not ring and not pinky:
         return "scissors" if index or middle else "rock"

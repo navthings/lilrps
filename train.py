@@ -31,7 +31,18 @@ def load_rounds() -> list[dict]:
 
 def normalise(kp: np.ndarray) -> np.ndarray:
     xy = kp[:, :2] - kp[0, :2]
-    return (xy / (np.linalg.norm(xy[9]) + 1e-6)).ravel()
+    # head-on
+    scale = max(np.linalg.norm(xy[9]), np.linalg.norm(xy[5] - xy[17]))
+    return (xy / (scale + 1e-6)).ravel()
+
+
+def tilt(rnd: dict, deg: float) -> dict:
+    a = np.radians(deg)
+    R = np.array([[1, 0, 0], [0, np.cos(a), -np.sin(a)], [0, np.sin(a), np.cos(a)]], dtype=np.float32)
+    kp = rnd["kp"].copy()
+    kp[..., 2] *= 16 / 9  # aspect
+    wrist = kp[:, :1]
+    return {**rnd, "kp": (kp - wrist) @ R.T + wrist}
 
 
 def window(rnd: dict, cutoff: float) -> np.ndarray:
@@ -58,8 +69,11 @@ class Predictor(nn.Module):
         return self.net(x)
 
 
-def train(rounds: list[dict], steps: int, val: list[dict] | None = None, seed: int = 0):
+def train(rounds: list[dict], steps: int, val: list[dict] | None = None, seed: int = 0, aug: int = 2):
     mx.random.seed(seed)
+    rng = np.random.default_rng(seed)
+    # fake head-on
+    rounds = rounds + [tilt(r, rng.uniform(0, 70)) for r in rounds for _ in range(aug)]
     x, y = make_set(rounds, TRAIN_AT)
     vx, vy = make_set(val, TRAIN_AT) if val else (None, None)
 
@@ -97,6 +111,7 @@ def main():
     ap = argparse.ArgumentParser(description="train the lilrps predictor and see how early it can read your throw")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--steps", type=int, default=400)
+    ap.add_argument("--aug", type=int, default=2, help="extra tilted copies of each round, so it learns head-on hands")
     args = ap.parse_args()
 
     rounds = load_rounds()
@@ -108,14 +123,17 @@ def main():
     rng = np.random.default_rng(0)
     folds = np.array_split(rng.permutation(len(rounds)), args.folds)
     acc = np.zeros((args.folds, len(EVAL_AT)))
+    head_on = np.zeros(args.folds)
     first_history = None
     for k, held in enumerate(folds):
         test = [rounds[i] for i in held]
         rest = [rounds[i] for i in range(len(rounds)) if i not in set(held)]
-        model, history = train(rest, args.steps, val=test, seed=k)
+        model, history = train(rest, args.steps, val=test, seed=k, aug=args.aug)
         first_history = first_history or history
         acc[k] = [accuracy(model, test, c) for c in EVAL_AT]
-        print(f"fold {k + 1}/{args.folds}: {acc[k][-1]:.0%} after landing, {acc[k][list(EVAL_AT).index(0.0)]:.0%} at shoot")
+        head_on[k] = accuracy(model, [tilt(r, 60) for r in test], 0.7)
+        print(f"fold {k + 1}/{args.folds}: {acc[k][-1]:.0%} after landing, {acc[k][list(EVAL_AT).index(0.0)]:.0%} at shoot, "
+              f"{head_on[k]:.0%} tilted 60deg")
 
     mean = acc.mean(axis=0)
     landed = np.nanmedian([r["done_t"] for r in rounds])
@@ -123,9 +141,11 @@ def main():
     for c, a in zip(EVAL_AT, mean):
         print(f"  {c:+.1f}s  {a:.0%}")
     print(f"guessing the most common move gets {counts.max() / counts.sum():.0%}, your hand lands at {landed:+.2f}s")
+    print(f"same rounds tilted 60deg toward the camera (fake head-on): {head_on.mean():.0%} after landing")
 
     (RESULTS / "accuracy.json").write_text(json.dumps({
         "cutoffs": EVAL_AT.tolist(), "accuracy": mean.tolist(), "per_fold": acc.tolist(),
+        "head_on_60deg": head_on.mean(), "aug": args.aug,
         "rounds": len(rounds), "counts": dict(zip(MOVES, counts.tolist())), "median_landing": landed,
     }, indent=2))
 
@@ -150,7 +170,7 @@ def main():
     fig.savefig(RESULTS / "loss.png", dpi=150)
 
     # final
-    model, _ = train(rounds, args.steps)
+    model, _ = train(rounds, args.steps, aug=args.aug)
     model.save_weights(str(RESULTS / "predictor.safetensors"))
     print(f"\nsaved charts + model to {RESULTS.relative_to(HERE)}/")
 

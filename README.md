@@ -34,9 +34,13 @@ once you've run `train.py` the robot uses the trained model: at `--cutoff` secon
 
 no ml, just geometry. a finger counts as straight if its tip is further from the wrist than its middle knuckle. ring + pinky decide most of it: both straight = paper, both curled = rock or scissors, and index/middle split those two. the thumb is ignored.
 
+that breaks when your fingers point at the camera, because a straight finger seen end-on looks as short as a curled one. so there's a second check for scissors: if the gap between your index and middle fingertips is bigger than `SPREAD` times your palm width, it's a v, and that gap is still visible head-on. a fist can fake that gap when mediapipe squashes the fingers, so it only counts if those two fingertips aren't folded back toward the wrist (`FOLDED`). on my saved rounds this took the referee from 73% to 85% on scissors frames, and it no longer calls any fists in my clips scissors.
+
 the round is "done" the first moment after shoot where the palm stops moving and the same move shows up in at least 2 of 3 frames. frames where mediapipe loses the hand are skipped. that timestamp is the finish line the predictor has to beat.
 
-if the referee keeps getting it wrong, tune `STILL` and `UP_RATIO` at the top of `play.py`. the debug line shows the live motion number.
+if the referee keeps getting it wrong, tune `STILL`, `UP_RATIO`, `SPREAD` and `FOLDED` at the top of `play.py`. the debug line shows the live motion number and how bright the frame is. it goes red under `DARK`, because in dim light the webcam blurs your hand mid-throw and mediapipe drops it.
+
+best results come from the camera seeing your hand side-on or palm-on, not fingers pointing straight at the lens.
 
 ## data
 
@@ -48,4 +52,6 @@ each round is one `.npz` in `data/rounds/`: every frame's 21 keypoints, times re
 .venv/bin/python train.py
 ```
 
-trains a small mlx network on your saved rounds and scores it with 5-fold cross validation (every round is tested by a model that never trained on it). prints accuracy at each cutoff from 0.4s before shoot to 0.7s after, and saves `results/accuracy.png`, `results/loss.png` and the model in `results/predictor.safetensors`.
+trains a small mlx network on your saved rounds and scores it with 5-fold cross validation (every round is tested by a model that never trained on it). prints accuracy at each cutoff from 0.4s before shoot to 0.7s after, plus accuracy on the test rounds tilted 60deg toward the camera as a fake head-on check, and saves `results/accuracy.png`, `results/loss.png` and the model in `results/predictor.safetensors`.
+
+to cope with head-on hands it also trains on copies of every round rotated toward the camera by up to 70deg (`--aug`, default 2 copies, `--aug 0` turns it off). the rotation uses mediapipe's depth guess, which is noisy, so real head-on rounds will still beat fake ones.
