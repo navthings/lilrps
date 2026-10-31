@@ -2,6 +2,8 @@
 
 a rock paper scissors robot that reads your hand before you finish throwing. (building it for fallen, hack club)
 
+**play it in your browser: [navthings.github.io/lilrps/web](https://navthings.github.io/lilrps/web/)** (same models, runs on your webcam, nothing gets uploaded. the setup below is for the full mac version that saves rounds)
+
 ![lilrps beating me 5 rounds in a row](assets/demo.gif)
 
 *thats what the robot actually sees, 21 dots on my hand. the blue move is the robot locking in 0.3s after shoot, usually before my hand has even finished landing*
