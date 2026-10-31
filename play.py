@@ -32,6 +32,8 @@ DARK = 70          # brightness
 REC_FPS = 15
 SURE = 0.6         # classifier confidence
 KEEP = 6           # crops saved per round
+ROCK_AFTER = 0.45  # seconds
+VOTES = 2          # frames
 
 # tip/knuckle
 FINGERS = [(8, 6), (12, 10), (16, 14), (20, 18)]
@@ -72,7 +74,16 @@ def see(kp: np.ndarray, img, clf) -> tuple[str | None, float | None]:
     if img is None:
         return None, None
     move, p = clf(img)
-    return (move if p >= SURE else None), p
+    return (move if p >= SURE and move in MOVES else None), p
+
+
+def overrule(landed: str | None, votes: list) -> str | None:
+    # everyone starts on a fist
+    if landed not in (None, "rock"):
+        return landed
+    other = [m for m in votes if m != "rock"]
+    top = max(set(other), key=other.count) if other else None
+    return top if top and other.count(top) >= VOTES else landed
 
 
 def motion(a: np.ndarray, b: np.ndarray) -> float:
@@ -163,17 +174,17 @@ def main():
     fps, last = 0.0, time.perf_counter()
     started = shoot_at = 0.0
     times, frames, crops = [], [], []
-    seen, last_kp = [], None
+    seen, last_kp, votes = [], None, []
     robot = guess = finish = None
     rnd = {}
 
     def start_round():
-        nonlocal state, started, shoot_at, times, frames, crops, seen, last_kp, robot, guess, finish
+        nonlocal state, started, shoot_at, times, frames, crops, seen, last_kp, votes, robot, guess, finish
         state = "count"
         started = time.perf_counter()
         shoot_at = started + 3 * BEAT
         times, frames, crops = [], [], []
-        seen, last_kp = [], None
+        seen, last_kp, votes = [], None, []
         robot = guess = finish = None
 
     def save_round():
@@ -226,6 +237,8 @@ def main():
             # landing
             landed = None
             lost = np.isnan(kp).any()
+            if live and t >= 0:
+                votes.append(live)
             if not lost or (clf and img is not None):
                 # held box = assume still
                 still = (lost and clf is not None) or (last_kp is not None and motion(last_kp, kp) < STILL)
@@ -235,7 +248,7 @@ def main():
                 recent = [p for p, _ in seen[-STABLE:]]
                 if len(recent) == STABLE:
                     top = max(set(recent), key=recent.count)
-                    if recent.count(top) >= STABLE - 1:  # glitch
+                    if recent.count(top) >= STABLE - 1 and (top != "rock" or t >= ROCK_AFTER):  # glitch
                         landed = top
 
             # commit
@@ -245,7 +258,7 @@ def main():
                 put(frame, f"robot: {robot}", 170, 1.4, (120, 200, 255))
 
             if finish is None and (landed or t > TIMEOUT):
-                finish = (landed, seen[-STABLE][1] if landed else None)
+                finish = (overrule(landed, votes), seen[-STABLE][1] if landed else None)
             if finish and robot:
                 rnd = {"referee": finish[0], "label": finish[0], "done_t": finish[1],
                        "robot": robot, "guess": guess}
