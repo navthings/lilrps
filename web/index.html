@@ -1,0 +1,224 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>lilrps</title>
+<style>
+  body { margin: 0; background: #000; color: #fff; font: 16px sans-serif; }
+  canvas { display: block; width: 100vw; height: 100vh; object-fit: contain; }
+  p { position: fixed; top: 0; left: 0; margin: 20px; }
+</style>
+<p id="msg">loading...</p>
+<canvas id="c"></canvas>
+<script type="module">
+import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.0/vision_bundle.mjs";
+import { parse, Predictor } from "./nn.js";
+
+const MOVES = ["rock", "paper", "scissors"];
+const COUNTER = { rock: "paper", paper: "scissors", scissors: "rock" };
+const WORDS = ["rock", "paper", "scissors", "shoot!"];
+const BEAT = 0.45, STILL = 0.015, STABLE = 3, LOOK_FROM = -0.2, TIMEOUT = 1.5, CUTOFF = 0.3, SURE = 0.6;
+const SAVE = 112, SIZE = 96, PAD = 2.2, HOLD = 1.0, SMOOTH = 0.5, W = 8;
+const PALM = [0, 5, 9, 13, 17];
+
+const msg = document.getElementById("msg");
+const cv = document.getElementById("c"), ctx = cv.getContext("2d", { willReadFrequently: true });
+
+try {
+  const video = document.createElement("video");
+  video.playsInline = video.muted = true;
+  video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, facingMode: "user", frameRate: { ideal: 60 } } });
+  await video.play();
+  const w = (cv.width = video.videoWidth), h = (cv.height = video.videoHeight);
+
+  const CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.0/wasm";
+  const hands = await HandLandmarker.createFromOptions(await FilesetResolver.forVisionTasks(CDN), {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+      delegate: "GPU",
+    },
+    runningMode: "VIDEO", numHands: 1,
+    minHandDetectionConfidence: 0.3, minHandPresenceConfidence: 0.3, minTrackingConfidence: 0.3,
+  });
+  const model = Predictor(parse(await (await fetch("../results/predictor.safetensors")).arrayBuffer()));
+
+  // classifier
+  const worker = new Worker("./worker.js", { type: "module" });
+  let busy = true, live = null, liveP = null;
+  await new Promise(r => (worker.onmessage = r));
+  worker.onmessage = e => {
+    const i = e.data.indexOf(Math.max(...e.data));
+    [live, liveP, busy] = [e.data[i] >= SURE ? MOVES[i] : null, e.data[i], false];
+  };
+  busy = false;
+  msg.remove();
+
+  let box = null, seenAt = -1e9;
+  function track(kp, now) {
+    if (kp) {
+      const xs = kp.map(p => p[0] * h), ys = kp.map(p => p[1] * h);
+      const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+      const nb = [(x0 + x1) / 2, (y0 + y1) / 2, Math.max(x1 - x0, y1 - y0, 0.12 * h) * PAD];
+      box = box ? box.map((b, i) => SMOOTH * b + (1 - SMOOTH) * nb[i]) : nb;
+      seenAt = now;
+    } else if (now - seenAt > HOLD) box = null;
+  }
+
+  // bgr
+  function crop(px, [cx, cy, side]) {
+    const out = new Float32Array(SIZE * SIZE * 3), o = (SAVE - SIZE) / 2, k = side / SAVE;
+    for (let v = 0; v < SIZE; v++) {
+      const sy = Math.min(Math.max(cy - side / 2 + (v + o) * k, 0), h - 1), y0 = Math.floor(sy), y1 = Math.min(y0 + 1, h - 1), fy = sy - y0;
+      for (let u = 0; u < SIZE; u++) {
+        const sx = Math.min(Math.max(cx - side / 2 + (u + o) * k, 0), w - 1), x0 = Math.floor(sx), x1 = Math.min(x0 + 1, w - 1), fx = sx - x0;
+        const a = (y0 * w + x0) * 4, b = (y0 * w + x1) * 4, c = (y1 * w + x0) * 4, d = (y1 * w + x1) * 4;
+        for (let ch = 0; ch < 3; ch++) {
+          const top = px[a + ch] * (1 - fx) + px[b + ch] * fx, bot = px[c + ch] * (1 - fx) + px[d + ch] * fx;
+          out[(v * SIZE + u) * 3 + 2 - ch] = (top * (1 - fy) + bot * fy) / 255 - 0.5;
+        }
+      }
+    }
+    return out;
+  }
+
+  function motion(a, b) {
+    if (!a || !b) return Infinity;
+    return PALM.reduce((s, i) => s + Math.hypot(b[i][0] - a[i][0], b[i][1] - a[i][1]), 0) / PALM.length;
+  }
+
+  function normalise(kp) {
+    const xy = kp.map(p => [p[0] - kp[0][0], p[1] - kp[0][1]]);
+    const scale = Math.max(Math.hypot(...xy[9]), Math.hypot(xy[5][0] - xy[17][0], xy[5][1] - xy[17][1])) + 1e-6;
+    return xy.flat().map(v => v / scale);
+  }
+
+  function predict(times, frames) {
+    const seen = frames.filter((k, i) => k && times[i] <= CUTOFF).slice(-W).map(normalise);
+    const x = new Float32Array(W * 42);
+    seen.forEach((f, i) => x.set(f, (W - seen.length + i) * 42));
+    const y = model(x);
+    return MOVES[y.indexOf(Math.max(...y))];
+  }
+
+  function winner(you, robot) {
+    if (you === robot) return "draw";
+    return COUNTER[you] === robot ? "robot wins" : "you win";
+  }
+
+  function put(text, y, scale = 1, color = "#fff") {
+    ctx.font = `bold ${Math.round(scale * 32)}px sans-serif`;
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = "#000";
+    ctx.strokeText(text, 30, y);
+    ctx.fillStyle = color;
+    ctx.fillText(text, 30, y);
+  }
+
+  let state = "idle", started, shootAt, times, frames, seen, lastKp, robot, guess, finish, rnd;
+  let fps = 0, last = performance.now();
+
+  function start() {
+    state = "count";
+    started = performance.now() / 1000;
+    shootAt = started + 3 * BEAT;
+    times = []; frames = []; seen = []; lastKp = null;
+    robot = guess = finish = null;
+  }
+
+  function go() {
+    if (state !== "count") start();
+  }
+  addEventListener("keydown", e => e.code === "Space" && (e.preventDefault(), go()));
+  cv.addEventListener("pointerdown", go);
+
+  // new frames only
+  const next = f => (video.requestVideoFrameCallback ? video.requestVideoFrameCallback(f) : requestAnimationFrame(f));
+
+  function frame() {
+    const ms = performance.now(), now = ms / 1000;
+    fps = 0.9 * fps + 100 / Math.max(ms - last, 1e-3);
+    last = ms;
+
+    // mirror
+    ctx.setTransform(-1, 0, 0, 1, w, 0);
+    ctx.drawImage(video, 0, 0, w, h);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+    const res = hands.detectForVideo(cv, ms);
+    const lm = res.landmarks[0];
+    const kp = lm ? lm.map(p => [p.x * w / h, p.y, p.z]) : null;
+    track(kp, now);
+    if (box && !busy) {
+      busy = true;
+      const img = crop(ctx.getImageData(0, 0, w, h).data, box);
+      worker.postMessage(img, [img.buffer]);
+    }
+    if (!box) live = liveP = null;
+
+    if (lm) {
+      ctx.strokeStyle = "#0f0";
+      ctx.lineWidth = 2;
+      for (const { start: a, end: b } of HandLandmarker.HAND_CONNECTIONS) {
+        ctx.beginPath();
+        ctx.moveTo(lm[a].x * w, lm[a].y * h);
+        ctx.lineTo(lm[b].x * w, lm[b].y * h);
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#f00";
+      for (const p of lm) ctx.fillRect(p.x * w - 3, p.y * h - 3, 6, 6);
+    }
+    if (box) {
+      ctx.strokeStyle = "#50c8ff";
+      ctx.strokeRect(box[0] - box[2] / 2, box[1] - box[2] / 2, box[2], box[2]);
+    }
+
+    if (state === "idle") put("space / tap = play", 60);
+
+    if (state === "count") {
+      const t = now - shootAt;
+      times.push(t);
+      frames.push(kp);
+      put(WORDS[Math.min(Math.floor((now - started) / BEAT), 3)], 90, 2.2);
+
+      // landing
+      let landed = null;
+      if (kp || box) {
+        const still = !kp || motion(lastKp, kp) < STILL;
+        seen = t >= LOOK_FROM && still && live ? [...seen, [live, t]] : [];
+        if (kp) lastKp = kp;
+        const recent = seen.slice(-STABLE).map(s => s[0]);
+        if (recent.length === STABLE) {
+          const top = MOVES.reduce((a, m) => (recent.filter(r => r === m).length > recent.filter(r => r === a).length ? m : a));
+          if (recent.filter(r => r === top).length >= STABLE - 1) landed = top;
+        }
+      }
+
+      // commit
+      if (!robot && t >= CUTOFF) robot = COUNTER[(guess = predict(times, frames))];
+      if (robot) put(`robot: ${robot}`, 170, 1.4, "#ffc878");
+
+      if (!finish && (landed || t > TIMEOUT)) finish = [landed, landed ? seen[seen.length - STABLE][1] : null];
+      if (finish && robot) {
+        rnd = { you: finish[0], done: finish[1], robot, guess };
+        state = "result";
+      }
+    }
+
+    if (state === "result") {
+      if (rnd.you) {
+        put(`you: ${rnd.you}   robot: ${rnd.robot}`, 60);
+        put(winner(rnd.you, rnd.robot), 110, 1.6);
+        if (rnd.done !== null) put(`landed ${Math.round(rnd.done * 1000)}ms from shoot`, 160, 0.8);
+        put(`it guessed ${rnd.guess} at +${CUTOFF * 1000}ms`, 210, 0.7);
+      } else put("couldnt read your hand", 60);
+      put("space / tap = next", 260, 0.7);
+    }
+
+    put(`fps ${Math.round(fps)}   sees ${live || "-"}${liveP !== null ? ` ${Math.round(liveP * 100)}%` : ""}`, h - 25, 0.6, "#b4ffb4");
+    next(frame);
+  }
+  next(frame);
+} catch (e) {
+  msg.textContent = `error: ${e.message}`;
+  throw e;
+}
+</script>
