@@ -25,3 +25,8 @@ it couldnt read scissors when my fingers pointed at the camera. the referee meas
 the predictor had the same blind spot. it scaled every hand by wrist-to-knuckle length, which shrinks head-on and blows the numbers up. now it scales by palm width too. it also trains on copies of each round tilted toward the camera so it has seen something like head-on. added a light readout to the debug line too, since dim light means blur means mediapipe drops my hand.
 
 retrained on 155 rounds with the tilted copies: 85% after landing (same as before), and 84% on rounds tilted 60deg toward the camera, up from 59%.
+
+head-on scissors still failed. ran my screenshot through mediapipe with tracking off: no hand found, lite or full model, even at 5% confidence. the skeleton i was seeing was leftover tracking from my fist, so every rule on top of the points was reading a fake fist.
+
+so the referee reads pixels now. box around the hand from mediapipe (2.2x bigger so it covers the fingers even when the points are wrong), crop to 112x112, small mlx cnn says rock / paper / scissors. collect.py records 4 second bursts of crops per move, train_crops.py trains it and tests on bursts it never saw. hit a batchnorm bug on the way: it got 100% in train mode and 39% in eval on the same images because the running averages lag the weights, fixed by running 30 batches through before scoring (83%). next: collect real crops incl head-on and train it.
+

@@ -8,11 +8,13 @@ import mediapipe as mp
 import mlx.core as mx
 import numpy as np
 
+import hand
 from train import Predictor, window
 
 HERE = Path(__file__).parent
 ROUNDS = HERE / "data" / "rounds"
 CLIPS = HERE / "clips"
+CROPS = HERE / "data" / "crops"
 
 MOVES = ["rock", "paper", "scissors"]
 COUNTER = {"rock": "paper", "paper": "scissors", "scissors": "rock"}  # beats
@@ -28,6 +30,8 @@ SPREAD = 0.8       # v gap / palm width
 FOLDED = 0.9       # curled tips fold back
 DARK = 70          # brightness
 REC_FPS = 15
+SURE = 0.6         # classifier confidence
+KEEP = 6           # crops saved per round
 
 # tip/knuckle
 FINGERS = [(8, 6), (12, 10), (16, 14), (20, 18)]
@@ -60,6 +64,15 @@ def read_pose(kp: np.ndarray) -> str | None:
     if not ring and not pinky:
         return "scissors" if index or middle else "rock"
     return None
+
+
+def see(kp: np.ndarray, img, clf) -> tuple[str | None, float | None]:
+    if clf is None:
+        return read_pose(kp), None
+    if img is None:
+        return None, None
+    move, p = clf(img)
+    return (move if p >= SURE else None), p
 
 
 def motion(a: np.ndarray, b: np.ndarray) -> float:
@@ -120,6 +133,7 @@ def main():
     ap.add_argument("--record", action="store_true", help="save the whole session as a video in clips/")
     ap.add_argument("--cutoff", type=float, default=0.3, help="seconds after shoot the robot has to commit")
     ap.add_argument("--random", action="store_true", help="ignore the trained model and throw randomly")
+    ap.add_argument("--rules", action="store_true", help="referee uses finger rules instead of the hand classifier")
     args = ap.parse_args()
 
     ROUNDS.mkdir(parents=True, exist_ok=True)
@@ -130,6 +144,9 @@ def main():
                                      min_detection_confidence=0.3, min_tracking_confidence=0.3)
     draw = mp.solutions.drawing_utils
     cap = open_camera(args.camera)
+    boxer = hand.Boxer()
+    clf = None if args.rules else hand.load()
+    print(f"referee: {'hand classifier' if clf else 'finger rules'}")
 
     model = None
     weights = HERE / "results" / "predictor.safetensors"
@@ -145,17 +162,17 @@ def main():
     rec_t = 0.0
     fps, last = 0.0, time.perf_counter()
     started = shoot_at = 0.0
-    times, frames = [], []
+    times, frames, crops = [], [], []
     seen, last_kp = [], None
     robot = guess = finish = None
     rnd = {}
 
     def start_round():
-        nonlocal state, started, shoot_at, times, frames, seen, last_kp, robot, guess, finish
+        nonlocal state, started, shoot_at, times, frames, crops, seen, last_kp, robot, guess, finish
         state = "count"
         started = time.perf_counter()
         shoot_at = started + 3 * BEAT
-        times, frames = [], []
+        times, frames, crops = [], [], []
         seen, last_kp = [], None
         robot = guess = finish = None
 
@@ -171,6 +188,12 @@ def main():
             robot=rnd["robot"], guess=rnd["guess"] or "", cutoff=np.float32(args.cutoff),
         )
         counts[rnd["label"]] += 1
+        # landed crops
+        start = rnd["done_t"] if rnd["done_t"] is not None else args.cutoff
+        keep = [c for c, t in zip(crops, times) if t >= start and c is not None][:KEEP]
+        (CROPS / rnd["label"]).mkdir(parents=True, exist_ok=True)
+        for i, c in enumerate(keep):
+            cv2.imwrite(str(CROPS / rnd["label"] / f"{name[:-4]}_{i}.jpg"), c)
 
     while True:
         ok, frame = cap.read()
@@ -182,8 +205,13 @@ def main():
         last = now
 
         kp, res = keypoints(hands, frame)
+        box = boxer.update(kp, frame, now)
+        img = hand.crop(frame, box) if box is not None else None
+        live, live_p = see(kp, img, clf)
         if res.multi_hand_landmarks:
             draw.draw_landmarks(frame, res.multi_hand_landmarks[0], mp.solutions.hands.HAND_CONNECTIONS)
+        if box is not None:
+            hand.draw_box(frame, box)
 
         if state == "idle":
             put(frame, "space = play   q = quit", 60)
@@ -192,15 +220,18 @@ def main():
             t = now - shoot_at
             times.append(t)
             frames.append(kp)
+            crops.append(img)
             put(frame, WORDS[min(int((now - started) / BEAT), 3)], 90, 2.2)
 
             # landing
             landed = None
-            if not np.isnan(kp).any():
-                pose = read_pose(kp)
-                still = last_kp is not None and motion(last_kp, kp) < STILL
-                seen = seen + [(pose, t)] if t >= LOOK_FROM and still and pose else []
-                last_kp = kp
+            lost = np.isnan(kp).any()
+            if not lost or (clf and img is not None):
+                # held box = assume still
+                still = (lost and clf is not None) or (last_kp is not None and motion(last_kp, kp) < STILL)
+                seen = seen + [(live, t)] if t >= LOOK_FROM and still and live else []
+                if not lost:
+                    last_kp = kp
                 recent = [p for p, _ in seen[-STABLE:]]
                 if len(recent) == STABLE:
                     top = max(set(recent), key=recent.count)
@@ -235,9 +266,9 @@ def main():
 
         if debug:
             m = motion(frames[-2], frames[-1]) if state == "count" and len(frames) > 1 else 0.0
-            live = read_pose(kp) or "-"
+            sees = (live or "-") + (f" {live_p:.0%}" if live_p is not None else "")
             light = frame.mean()
-            put(frame, f"fps {fps:.0f}   motion {m:.3f}   sees {live}   light {light:.0f}{' (too dark)' if light < DARK else ''}",
+            put(frame, f"fps {fps:.0f}   motion {m:.3f}   sees {sees}   light {light:.0f}{' (too dark)' if light < DARK else ''}",
                 frame.shape[0] - 60, 0.6, (180, 255, 180) if light >= DARK else (80, 80, 255))
             c = counts
             put(frame, f"saved  rock {c['rock']}  paper {c['paper']}  scissors {c['scissors']}",

@@ -42,9 +42,29 @@ if the referee keeps getting it wrong, tune `STILL`, `UP_RATIO`, `SPREAD` and `F
 
 best results come from the camera seeing your hand side-on or palm-on, not fingers pointing straight at the lens.
 
+## hand classifier
+
+mediapipe can't find a hand when your fingers point straight at the camera. it either loses it or keeps tracking a fake fist. so the referee can read your move from pixels instead:
+
+mediapipe points -> square box 2.2x bigger than the points (so it still covers your fingers when the points are squashed into a corner) -> 112x112 crop -> small mlx cnn -> rock / paper / scissors + how sure it is
+
+```
+.venv/bin/python collect.py
+```
+
+hold a move and press r / p / s, it saves every frame's crop for 4 seconds into `data/crops/<move>/`. move your hand around while it records: tilt it, go head-on, near and far. aim for about 8 bursts per move. once a model exists it shows its live guess so you can test head-on scissors.
+
+```
+.venv/bin/python train_crops.py
+```
+
+trains the cnn with random rotation, zoom, shift, mirror, blur and brightness changes, and tests on whole bursts it never trained on (frames inside one burst are near copies, so splitting by frame would cheat). saves `results/classifier.safetensors` and prints what you threw vs what it said.
+
+once that file exists `play.py` uses it as the referee automatically (it only trusts answers it's at least 60% sure of, `SURE` in `play.py`). `--rules` goes back to the finger rules. every saved round also saves up to 6 crops from after your hand lands, so playing keeps growing the dataset. the robot's early guess still uses mediapipe points, so it's still weaker head-on than the referee.
+
 ## data
 
-each round is one `.npz` in `data/rounds/`: every frame's 21 keypoints, times relative to shoot, the label, what the referee said, and when the hand landed.
+each round is one `.npz` in `data/rounds/`: every frame's 21 keypoints, times relative to shoot, the label, what the referee said, and when the hand landed. hand crops are jpgs in `data/crops/<move>/`, named `player_burst_n.jpg`.
 
 ## train
 
