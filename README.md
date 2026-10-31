@@ -67,7 +67,33 @@ hold a move, press r / p / s and it saves every frame's crop for 4 seconds into 
 
 trains with random rotate / zoom / shift / mirror / blur / brightness, and tests on whole bursts it never saw (frames inside one burst are basically copies so splitting by frame would cheat). once results/classifier.safetensors exists play.py uses it as the referee, and it only trusts answers its 60%+ sure of
 
-**status: it still doesnt do head on scissors live.** got 100% on held out bursts, then called my scissors rock at 99% in an actual game. mediapipe loses my hand right after shoot, so the box stays where my fist was and the model is looking at my arm going "yep rock". next up: make the box follow my hand when mediapipe drops it, and train on crops from real rounds instead of posed ones
+### v2: pretrained resnet18 + other peoples hands
+
+the small cnn only ever saw my hand, held still. so now its a resnet18 thats already seen imagenet, fine tuned on [HaGRID](https://github.com/ai-forever/hagrid) (a hand gesture dataset with tens of thousands of different people) plus my crops weighted 3x. fist = rock, palm = paper, peace = scissors
+
+theres also a 4th answer now, **none**. it learns it from boxes slid off the hand onto arms, shirts and background, which is exactly what my box does when mediapipe drops me. so instead of "rock 99%" on my arm it says "none" and the referee waits
+
+```
+.venv/bin/python hagrid.py      # needs the 3.5gb hagrid-sample-120k-384p zip unzipped in data/hagrid/
+.venv/bin/python train_r18.py   # ~20 min on an m5, writes results/classifier_r18.safetensors
+```
+
+play.py uses classifier_r18 if it exists, otherwise the old small one. about 4ms a frame on an m5
+
+| test | old cnn | resnet18 |
+|---|---|---|
+| hagrid people it never saw | - | 99.9% (1932) |
+| my bursts it never saw | 100% | 100% (266) |
+
+![hagrid crops (left 6) vs mine (right 2)](assets/journal/7_hagrid_crops.jpg)
+
+on the 65 crops play.py saved from real rounds, by eye its right on everything i can tell what my hand is doing, except 3 close up head-on scissors it calls rock. turns out those saved labels were mostly wrong anyway (sideways scissors saved as paper, side-on fists saved as paper, my arm saved as scissors), because they came from the old referee
+
+![its call on every real round crop. red letter = saved label, green = what it said](assets/journal/8_r18_real_rounds.jpg)
+
+the referee also got a rule: everyones hand starts as a fist, so a fist in the first 0.45s after shoot doesnt count yet, and if paper or scissors shows up in 2 sure frames it beats rock
+
+**status: still weak on close up head-on scissors.** next: record some head-on scissors bursts, and save raw frames from real rounds so i can test the whole referee on them
 
 ## the early guess
 
@@ -92,6 +118,7 @@ best results by far: camera sees your hand side on, not fingers pointing straigh
 ## data
 
 - data/rounds/: one .npz per round. every frame's 21 points, times relative to shoot, the label, what the referee said, when your hand landed
-- data/crops/&lt;move&gt;/: hand crops as jpgs, named player_burst_n.jpg
+- data/crops/&lt;move&gt;/: hand crops as jpgs, named player_burst_n.jpg (single digit n = saved by play.py from a real round)
+- data/hagrid/: hagrid zip + crops, not in git
 
 full story is in devlog.md and JOURNAL.md (summary: mediapipe hates me)
