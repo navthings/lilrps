@@ -6,12 +6,16 @@ import mlx.nn as nn
 import numpy as np
 
 MOVES = ["rock", "paper", "scissors"]
+CLASSES = MOVES + ["none"]
 SAVE = 112   # px stored
 SIZE = 96    # px model
 PAD = 2.2    # box / landmarks
 HOLD = 1.0   # seconds
 SMOOTH = 0.5
 WEIGHTS = Path(__file__).parent / "results" / "classifier.safetensors"
+R18 = Path(__file__).parent / "results" / "classifier_r18.safetensors"
+MEAN = np.array([0.485, 0.456, 0.406], np.float32)  # imagenet
+STD = np.array([0.229, 0.224, 0.225], np.float32)
 
 
 # held when lost
@@ -71,17 +75,61 @@ class HandNet(nn.Module):
         return self.head(self.drop(x.mean(axis=(1, 2))))
 
 
+# pretrained, same names as mlx-image
+class Block(nn.Module):
+    def __init__(self, a: int, b: int, stride: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(a, b, 3, stride, 1, bias=False)
+        self.bn1 = nn.BatchNorm(b)
+        self.conv2 = nn.Conv2d(b, b, 3, 1, 1, bias=False)
+        self.bn2 = nn.BatchNorm(b)
+        if stride != 1 or a != b:
+            self.downsample = nn.Sequential(nn.Conv2d(a, b, 1, stride, bias=False), nn.BatchNorm(b))
+
+    def __call__(self, x):
+        y = self.bn2(self.conv2(nn.relu(self.bn1(self.conv1(x)))))
+        return nn.relu(y + (self.downsample(x) if "downsample" in self else x))
+
+
+class ResNet18(nn.Module):
+    def __init__(self, classes: int = len(CLASSES)):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 64, 7, 2, 3, bias=False)
+        self.bn1 = nn.BatchNorm(64)
+        self.maxpool = nn.MaxPool2d(3, 2, 1)
+        chans = [64, 64, 128, 256, 512]
+        for i in range(4):
+            a, b = chans[i], chans[i + 1]
+            setattr(self, f"layer{i + 1}", nn.Sequential(Block(a, b, 1 if i == 0 else 2), Block(b, b, 1)))
+        self.fc = nn.Linear(512, classes)
+
+    def __call__(self, x):
+        x = self.maxpool(nn.relu(self.bn1(self.conv1(x))))
+        for i in range(1, 5):
+            x = self[f"layer{i}"](x)
+        return self.fc(x.mean(axis=(1, 2)))
+
+
+def prep_r18(imgs: np.ndarray) -> mx.array:
+    # bgr
+    x = imgs[..., ::-1].astype(np.float32) / 255
+    return mx.array((x - MEAN) / STD)
+
+
 class Classifier:
-    def __init__(self, path: Path = WEIGHTS):
-        self.net = HandNet()
-        self.net.load_weights(str(path))
+    def __init__(self):
+        self.r18 = R18.exists()
+        self.net = ResNet18() if self.r18 else HandNet()
+        self.net.load_weights(str(R18 if self.r18 else WEIGHTS))
         self.net.eval()
+        self.names = CLASSES if self.r18 else MOVES
 
     def __call__(self, img: np.ndarray) -> tuple[str, float]:
-        p = mx.softmax(self.net(prep(center(img[None]))), axis=-1)[0]
+        x = prep_r18(img[None]) if self.r18 else prep(center(img[None]))
+        p = mx.softmax(self.net(x), axis=-1)[0]
         i = int(p.argmax().item())
-        return MOVES[i], float(p[i].item())
+        return self.names[i], float(p[i].item())
 
 
 def load() -> Classifier | None:
-    return Classifier() if WEIGHTS.exists() else None
+    return Classifier() if R18.exists() or WEIGHTS.exists() else None
