@@ -1,14 +1,16 @@
 # lilrps
 
-a rock paper scissors robot that reads your hand before you finish throwing.
+a rock paper scissors robot that reads your hand before you finish throwing. (building it for fallen, hack club)
 
 ![lilrps beating me 5 rounds in a row](assets/demo.gif)
 
-*what the robot actually sees: 21 points on my hand, redrawn from the saved rounds. the blue move is the robot committing 0.3s after shoot, usually before my hand has finished landing.*
+*thats what the robot actually sees, 21 dots on my hand. the blue move is the robot locking in 0.3s after shoot, usually before my hand has even finished landing*
 
-mac webcam -> mediapipe finds 21 points on your hand -> a small model guesses your move from the first few frames -> robot throws the counter
+## what it does
 
-trained on 82 rounds of my hand, it reads the throw about 0.2s before it finishes landing, and beat me 11 out of 11 in a live session on rounds it had never seen.
+mac webcam -> mediapipe (the google hand thingy) finds 21 points on your hand -> a tiny model guesses your move from the first few frames -> robot throws whatever beats it
+
+trained on 82 rounds of my hand, it reads my throw about 0.2s before it lands and beat me 11 out of 11 live on rounds it had never seen. kinda embarrassing for me tbh
 
 ## setup
 
@@ -22,56 +24,72 @@ uv venv -p 3.12 .venv && uv pip install -p .venv -r requirements.txt
 .venv/bin/python play.py
 ```
 
-run it from apple terminal so macos asks for camera permission. space starts a round, throw on "shoot!".
+run it from apple terminal or macos wont ask for camera permission. space starts a round, throw on "shoot!"
 
-after each round the referee says what you threw. if its wrong press r / p / s to fix it, x to bin the round, space to save it and go again. d hides the debug line, q quits.
+after each round it tells you what you threw. if its wrong press r / p / s to fix it, x bins the round, space saves it and goes again. d hides the debug line, q quits
 
-once you've run `train.py` the robot uses the trained model: at `--cutoff` seconds after shoot (default 0.3) it guesses your move from what it's seen so far and throws the counter. `--cutoff 0.1` makes it commit earlier (harder for it), `--random` turns the model off. every round still gets saved, so playing is also collecting data.
+flags:
+- `--cutoff 0.3` how many seconds after shoot the robot has to commit. lower = harder for it
+- `--random` robot ignores the model and throws random
+- `--rules` referee uses the old finger rules instead of the hand classifier
+- `--player name` tags rounds with whose hand it is
+- `--record` saves the session as a video in clips/
 
-`--player name` tags rounds with whose hand it is (so we can test on hands it's never seen). `--record` saves the session as a video in `clips/`.
+every round gets saved, so playing = collecting data
 
-## how the referee works
+## how it works out what you threw
 
-no ml, just geometry. a finger counts as straight if its tip is further from the wrist than its middle knuckle. ring + pinky decide most of it: both straight = paper, both curled = rock or scissors, and index/middle split those two. the thumb is ignored.
+v1 was no ml, just geometry. a finger counts as straight if its tip is further from your wrist than its middle knuckle. ring + pinky both straight = paper, both curled = rock or scissors, and index/middle decide which
 
-that breaks when your fingers point at the camera, because a straight finger seen end-on looks as short as a curled one. so there's a second check for scissors: if the gap between your index and middle fingertips is bigger than `SPREAD` times your palm width, it's a v, and that gap is still visible head-on. a fist can fake that gap when mediapipe squashes the fingers, so it only counts if those two fingertips aren't folded back toward the wrist (`FOLDED`). on my saved rounds this took the referee from 73% to 85% on scissors frames, and it no longer calls any fists in my clips scissors.
+then i found out scissors doesnt work head on. a finger pointing straight at the camera looks exactly as short as a curled one, so my V turned into rock. added a check for the gap between the index and middle tips (more than 0.8 palm widths = V) and scissors went from 73% to 85% on my saved rounds. the first version called 13 of my fists scissors lol so now the V only counts if those tips arent folded back toward your wrist
 
-the round is "done" the first moment after shoot where the palm stops moving and the same move shows up in at least 2 of 3 frames. frames where mediapipe loses the hand are skipped. that timestamp is the finish line the predictor has to beat.
+then i found the ACTUAL problem. mediapipe doesnt even see a hand head on. i ran a screenshot through it with tracking off and it found nothing, even at 5% confidence. the skeleton i was seeing was just leftover tracking from my fist, so every rule i wrote was reading a fake fist. you cant fix bad points with better rules
 
-if the referee keeps getting it wrong, tune `STILL`, `UP_RATIO`, `SPREAD` and `FOLDED` at the top of `play.py`. the debug line shows the live motion number and how bright the frame is. it goes red under `DARK`, because in dim light the webcam blurs your hand mid-throw and mediapipe drops it.
+## hand classifier (reading pixels instead of points)
 
-best results come from the camera seeing your hand side-on or palm-on, not fingers pointing straight at the lens.
+so now mediapipe only finds roughly where your hand is:
 
-## hand classifier
+mediapipe points -> square box 2.2x bigger than the points -> 112x112 crop -> small cnn (mlx) -> rock / paper / scissors + how sure it is
 
-mediapipe can't find a hand when your fingers point straight at the camera. it either loses it or keeps tracking a fake fist. so the referee can read your move from pixels instead:
-
-mediapipe points -> square box 2.2x bigger than the points (so it still covers your fingers when the points are squashed into a corner) -> 112x112 crop -> small mlx cnn -> rock / paper / scissors + how sure it is
+![points, box and the crop the model gets](assets/journal/3_box_tracing.png)
 
 ```
 .venv/bin/python collect.py
 ```
 
-hold a move and press r / p / s, it saves every frame's crop for 4 seconds into `data/crops/<move>/`. move your hand around while it records: tilt it, go head-on, near and far. aim for about 8 bursts per move. once a model exists it shows its live guess so you can test head-on scissors.
+hold a move, press r / p / s and it saves every frame's crop for 4 seconds into data/crops/. move your hand around while it records: tilt it, go head on, near and far. about 8 bursts per move
 
 ```
 .venv/bin/python train_crops.py
 ```
 
-trains the cnn with random rotation, zoom, shift, mirror, blur and brightness changes, and tests on whole bursts it never trained on (frames inside one burst are near copies, so splitting by frame would cheat). saves `results/classifier.safetensors` and prints what you threw vs what it said.
+trains with random rotate / zoom / shift / mirror / blur / brightness, and tests on whole bursts it never saw (frames inside one burst are basically copies so splitting by frame would cheat). once results/classifier.safetensors exists play.py uses it as the referee, and it only trusts answers its 60%+ sure of
 
-once that file exists `play.py` uses it as the referee automatically (it only trusts answers it's at least 60% sure of, `SURE` in `play.py`). `--rules` goes back to the finger rules. every saved round also saves up to 6 crops from after your hand lands, so playing keeps growing the dataset. the robot's early guess still uses mediapipe points, so it's still weaker head-on than the referee.
+**status: it still doesnt do head on scissors live.** got 100% on held out bursts, then called my scissors rock at 99% in an actual game. mediapipe loses my hand right after shoot, so the box stays where my fist was and the model is looking at my arm going "yep rock". next up: make the box follow my hand when mediapipe drops it, and train on crops from real rounds instead of posed ones
 
-## data
-
-each round is one `.npz` in `data/rounds/`: every frame's 21 keypoints, times relative to shoot, the label, what the referee said, and when the hand landed. hand crops are jpgs in `data/crops/<move>/`, named `player_burst_n.jpg`.
-
-## train
+## the early guess
 
 ```
 .venv/bin/python train.py
 ```
 
-trains a small mlx network on your saved rounds and scores it with 5-fold cross validation (every round is tested by a model that never trained on it). prints accuracy at each cutoff from 0.4s before shoot to 0.7s after, plus accuracy on the test rounds tilted 60deg toward the camera as a fake head-on check, and saves `results/accuracy.png`, `results/loss.png` and the model in `results/predictor.safetensors`.
+small mlx network that looks at the last 8 frames of hand points and guesses your move. scored with 5 fold cross validation, so every round gets tested by a model that never trained on it. prints accuracy at every cutoff from 0.4s before shoot to 0.7s after and saves the charts + results/predictor.safetensors
 
-to cope with head-on hands it also trains on copies of every round rotated toward the camera by up to 70deg (`--aug`, default 2 copies, `--aug 0` turns it off). the rotation uses mediapipe's depth guess, which is noisy, so real head-on rounds will still beat fake ones.
+it scales hands by palm width and trains on copies of every round tilted toward the camera (`--aug`, default 2) so head on hands dont totally break it. on rounds tilted 60 degrees it went 59% -> 84%. the tilt is faked from mediapipe's depth guess though, so its not real head on data
+
+![predictor before vs after](assets/journal/2_predictor.png)
+
+it still runs on mediapipe points, so its worse head on than the classifier will be
+
+## tuning
+
+if the referee keeps getting stuff wrong tweak STILL, UP_RATIO, SPREAD and FOLDED at the top of play.py. the debug line shows motion and brightness and goes red when its too dark, cuz dim light = blurry hand = mediapipe drops it
+
+best results by far: camera sees your hand side on, not fingers pointing straight at it
+
+## data
+
+- data/rounds/: one .npz per round. every frame's 21 points, times relative to shoot, the label, what the referee said, when your hand landed
+- data/crops/&lt;move&gt;/: hand crops as jpgs, named player_burst_n.jpg
+
+full story is in devlog.md and JOURNAL.md (summary: mediapipe hates me)
