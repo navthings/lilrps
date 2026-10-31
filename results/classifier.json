@@ -1,0 +1,27 @@
+{
+  "held_out_acc": 1.0,
+  "confusion": [
+    [
+      100,
+      0,
+      0
+    ],
+    [
+      0,
+      67,
+      0
+    ],
+    [
+      0,
+      0,
+      99
+    ]
+  ],
+  "counts": {
+    "rock": 608,
+    "paper": 538,
+    "scissors": 478
+  },
+  "bursts": 17,
+  "epochs": 25
+}
