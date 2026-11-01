@@ -33,7 +33,7 @@ REC_FPS = 15
 SURE = 0.6         # classifier confidence
 KEEP = 6           # crops saved per round
 ROCK_AFTER = 0.45  # seconds
-VOTES = 2          # frames
+VOTES = 3          # frames
 
 # tip/knuckle
 FINGERS = [(8, 6), (12, 10), (16, 14), (20, 18)]
@@ -83,7 +83,7 @@ def overrule(landed: str | None, votes: list) -> str | None:
         return landed
     other = [m for m in votes if m != "rock"]
     top = max(set(other), key=other.count) if other else None
-    return top if top and other.count(top) >= VOTES else landed
+    return top if top and other.count(top) >= max(VOTES, len(votes) / 3) else landed
 
 
 def motion(a: np.ndarray, b: np.ndarray) -> float:
