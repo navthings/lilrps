@@ -100,6 +100,9 @@ def main():
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--nav-weight", type=int, default=3, help="how many times each of your crops repeats per epoch")
+    ap.add_argument("--init", action="store_true", help="keep training the current classifier_r18 instead of starting from imagenet")
+    ap.add_argument("--all", action="store_true", help="train on every one of your bursts (held-out numbers become train numbers)")
+    ap.add_argument("--fresh", type=int, default=0, help="bursts with an id >= this are a new session: newest one per move is always held out")
     args = ap.parse_args()
     rng = np.random.default_rng(0)
 
@@ -109,6 +112,16 @@ def main():
     posed = np.where(~n_real)[0]
     tr, va = split(n_ys[posed], n_groups[posed], rng)
     n_tr, n_va, n_rl = posed[tr], posed[va], np.where(n_real)[0]
+    if args.all:
+        n_tr = posed
+    bid = np.array([int(g.split("_")[1]) for g in n_groups])
+    n_fr = np.array([], int)
+    if args.fresh:
+        # newest
+        keep = [n_groups[posed][bid[posed] == bid[posed][n_ys[posed] == y].max()][0]
+                for y in range(len(MOVES)) if (bid[posed][n_ys[posed] == y] >= args.fresh).any()]
+        n_fr = posed[np.isin(n_groups[posed], keep)]
+        n_tr, n_va = np.setdiff1d(n_tr, n_fr), np.setdiff1d(n_va, n_fr)
     print(f"hagrid {len(h_ys)} ({h_val.sum()} held-out people), yours {len(n_ys)}: "
           f"{len(n_tr)} train, {len(n_va)} held-out bursts, {len(n_rl)} from real rounds. loaded in {time.time() - t0:.0f}s")
 
@@ -117,9 +130,13 @@ def main():
     pool = np.concatenate([np.arange((~h_val).sum()), np.repeat(np.arange((~h_val).sum(), len(ys)), args.nav_weight)])
 
     mx.random.seed(0)
-    model = ResNet18(1000)
-    model.load_weights(str(IMAGENET))
-    model.fc = nn.Linear(512, len(CLASSES))
+    if args.init:
+        model = ResNet18()
+        model.load_weights(str(R18))
+    else:
+        model = ResNet18(1000)
+        model.load_weights(str(IMAGENET))
+        model.fc = nn.Linear(512, len(CLASSES))
     steps = args.epochs * (len(pool) // args.batch)
     opt = optim.AdamW(learning_rate=optim.cosine_decay(args.lr, steps), weight_decay=1e-4)
 
@@ -142,8 +159,9 @@ def main():
         h_acc = (predict(model, h_imgs[h_val]) == h_ys[h_val]).mean()
         n_acc = (predict(model, n_imgs[n_va]) == n_ys[n_va]).mean()
         r_acc = (predict(model, n_imgs[n_rl]) == n_ys[n_rl]).mean()
+        f_acc = (predict(model, n_imgs[n_fr]) == n_ys[n_fr]).mean() if len(n_fr) else float("nan")
         print(f"epoch {epoch}  loss {np.mean(losses):.3f}  hagrid people {h_acc:.1%}  your bursts {n_acc:.1%}  "
-              f"your real rounds {r_acc:.1%}  ({time.time() - t0:.0f}s)", flush=True)
+              f"todays bursts {f_acc:.1%}  your real rounds {r_acc:.1%}  ({time.time() - t0:.0f}s)", flush=True)
         score = (h_acc + n_acc) / 2  # real rounds stay a pure test
         if score >= best:
             best, best_w = score, dict(tree_flatten(model.parameters()))
@@ -153,6 +171,7 @@ def main():
     res = {
         "hagrid_people": show("hagrid, people it never saw", confusion(h_ys[h_val], predict(model, h_imgs[h_val]))),
         "nav_bursts": show("your posed bursts it never saw", confusion(n_ys[n_va], predict(model, n_imgs[n_va]))),
+        "nav_fresh_bursts": show("newest burst per move, never trained on", confusion(n_ys[n_fr], predict(model, n_imgs[n_fr]))),
         "nav_real_rounds": show("your crops from real rounds (never trained on)", confusion(n_ys[n_rl], predict(model, n_imgs[n_rl]))),
     }
     model.save_weights(str(R18))
