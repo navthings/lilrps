@@ -50,3 +50,43 @@ hit a batchnorm bug on the way. on 18 test images it got 100% in training mode a
 ### next
 
 collect real crops (about 8 bursts per move, with head-on ones for every move so it doesn't just learn head-on = scissors), train it, and see if it finally gets my head-on scissors. after that the early guess should move to pixels too, because right now it still runs on mediapipe points.
+
+## 1 nov 2026: making it always win (and planning the real one)
+
+the referee finally works. resnet18 reads my rock, paper and scissors live, head-on included. which made me realise something kinda dumb: if the referee already knows what i threw, why is the robot still guessing?
+
+### cheating (legally)
+
+up to now the robot had to commit 0.3s after shoot, using a small model on mediapipe points. it was good on my hand, but it was still a guess, and guesses lose sometimes.
+
+there's a robot from the ishikawa lab at the university of tokyo that wins rock paper scissors every single time. it doesn't predict anything. it watches your hand with a really fast camera and reacts before your brain can notice. so i did that.
+
+now the robot waits for the referee to lock in your move and throws the counter on that same frame. its move comes straight from the referee's call, so the only way it loses is if the referee reads your hand wrong.
+
+the early guess still runs. the result screen shows when the robot locked in and what the keypoint guess would've thrown, so i can still see if the prediction side is any good. `--predict` (or `?predict` on the browser version) puts the old mode back.
+
+one catch: rock. everyone's hand starts as a fist, so the referee won't call rock until 0.45s after shoot. against rock the robot's paper shows up late enough that you might notice. paper and scissors lock about 3 frames after your hand lands, which is way harder to see.
+
+### the irl one
+
+on screen, reacting is free. a real hand has to actually move. a cheap sg90 servo turns about 60 degrees in 0.1s, so going fist -> open hand adds roughly 150ms on top of the camera. that's slow enough to look like it's reacting, so every idea below is really about that.
+
+**tendon hand, 2 servos.** printed fingers, fishing line to the servo, elastic pulls them back open. servo A does index + middle, servo B does ring + pinky + thumb. both curled = rock, both open = paper, A open and B curled = scissors. cheap and looks like a real hand, but the string stretches and it needs a lot of tuning.
+
+**linkage fingers, 2 servos.** same 2 groups, but each finger is a rigid 4-bar linkage driven straight off the servo. no string, no elastic, same pose every time. more cad work, but probably the best one for this.
+
+**spinning wheel, 1 servo.** a 3-sided thing with a fist, palm and V on it that turns to the right face. worst case is 120 degrees and nothing can jam. looks like a toy, but it'd be a quick way to test the timing before building fingers.
+
+**full 5 servo hand.** one servo per finger. way more wiring and power for the same 3 moves, and it doesn't fix the speed. nah.
+
+the brain stays on my mac (resnet18 is about 4ms a frame there). play.py sends one byte over usb serial to a pico that moves the servos. chrome can talk to serial devices too, so the browser version could drive it.
+
+### making it fast
+
+starting the countdown half curled means no move is ever a full sweep. faster micro servos help too, some are around 0.06s per 60 degrees. but the real fix is bringing the early guess back as a head start: at +0.3s the hand starts moving toward the guess, then when the referee locks in it corrects if the guess was wrong. most rounds it's already there by the time it needs to be.
+
+prediction gets it moving early, reaction makes sure it's right. that's the plan.
+
+### next
+
+play a bunch of rounds to check the lock times, then cad the two finger groups.
