@@ -23,35 +23,84 @@ const PALM = [0, 5, 9, 13, 17];
 
 const msg = document.getElementById("msg");
 const cv = document.getElementById("c"), ctx = cv.getContext("2d", { willReadFrequently: true });
+const say = t => (msg.textContent = t);
+
+async function get(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`couldnt load ${url} (${r.status})`);
+  return r.arrayBuffer();
+}
+
+const CAMERA = {
+  NotAllowedError: "camera is blocked. allow it for this site, then reload",
+  NotFoundError: "no camera found. give your browser camera access (mac: system settings > privacy & security > camera, windows: settings > privacy & security > camera), close anything else using it, then reload",
+  NotReadableError: "camera is busy. close other apps or tabs using it, then reload",
+};
+
+async function camera() {
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error("no camera access here. open it over https in a normal browser tab");
+  try {
+    return await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, facingMode: "user", frameRate: { ideal: 60 } } });
+  } catch (e) {
+    if (e.name === "NotAllowedError") throw new Error(CAMERA[e.name]);
+    // picky cameras
+    try {
+      return await navigator.mediaDevices.getUserMedia({ video: true });
+    } catch (e2) {
+      throw new Error(CAMERA[e2.name] || `camera: ${e2.message}`);
+    }
+  }
+}
 
 try {
+  // starts downloading now
+  const worker = new Worker("./worker.js", { type: "module" });
+  const ready = new Promise((ok, fail) => {
+    worker.onmessage = e => (e.data?.error ? fail(new Error(e.data.error)) : ok());
+    worker.onerror = e => fail(new Error(`model worker didnt start: ${e.message || "unknown"}`));
+  });
+  ready.catch(() => {});
+
+  say("starting camera...");
   const video = document.createElement("video");
   video.playsInline = video.muted = true;
-  video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, facingMode: "user", frameRate: { ideal: 60 } } });
+  video.srcObject = await camera();
   await video.play();
+  if (!video.videoWidth) await new Promise(r => (video.onloadedmetadata = r));
   const w = (cv.width = video.videoWidth), h = (cv.height = video.videoHeight);
 
+  say("loading hand tracker...");
   const CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.0/wasm";
-  const hands = await HandLandmarker.createFromOptions(await FilesetResolver.forVisionTasks(CDN), {
+  const vision = await FilesetResolver.forVisionTasks(CDN);
+  const options = delegate => ({
     baseOptions: {
       modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-      delegate: "GPU",
+      delegate,
     },
     runningMode: "VIDEO", numHands: 1,
     minHandDetectionConfidence: 0.3, minHandPresenceConfidence: 0.3, minTrackingConfidence: 0.3,
   });
-  const model = Predictor(parse(await (await fetch("../results/predictor.safetensors")).arrayBuffer()));
+  let hands;
+  try {
+    hands = await HandLandmarker.createFromOptions(vision, options("GPU"));
+  } catch (e) {
+    // no webgl
+    console.warn("hand tracker gpu failed, using cpu", e);
+    hands = await HandLandmarker.createFromOptions(vision, options("CPU"));
+  }
+  const model = Predictor(parse(await get("../results/predictor.safetensors")));
 
-  // classifier
-  const worker = new Worker("./worker.js", { type: "module" });
-  let busy = true, live = null, liveP = null;
-  await new Promise(r => (worker.onmessage = r));
+  say("loading hand model (22mb)...");
+  await ready;
+  let busy = false, live = null, liveP = null;
   worker.onmessage = e => {
+    busy = false;
+    if (!Array.isArray(e.data)) return void (live = liveP = null);
     const i = e.data.indexOf(Math.max(...e.data));
     // 3 = none
-    [live, liveP, busy] = [e.data[i] >= SURE && i < 3 ? MOVES[i] : null, e.data[i], false];
+    [live, liveP] = [e.data[i] >= SURE && i < 3 ? MOVES[i] : null, e.data[i]];
   };
-  busy = false;
+  worker.onerror = e => console.error("model worker", e.message);
   msg.remove();
 
   let box = null, seenAt = -1e9;
@@ -127,7 +176,17 @@ try {
   // new frames only
   const next = f => (video.requestVideoFrameCallback ? video.requestVideoFrameCallback(f) : requestAnimationFrame(f));
 
+  let errors = 0;
   function frame() {
+    try {
+      tick();
+    } catch (e) {
+      if (errors++ < 3) console.error(e);
+    }
+    next(frame);
+  }
+
+  function tick() {
     const ms = performance.now(), now = ms / 1000;
     fps = 0.9 * fps + 100 / Math.max(ms - last, 1e-3);
     last = ms;
@@ -209,11 +268,10 @@ try {
     }
 
     put(`fps ${Math.round(fps)}   sees ${live || "-"}${liveP !== null ? ` ${Math.round(liveP * 100)}%` : ""}`, h - 25, 0.6, "#b4ffb4");
-    next(frame);
   }
   next(frame);
 } catch (e) {
-  msg.textContent = `error: ${e.message}`;
-  throw e;
+  say(`error: ${e.message}`);
+  console.error(e);
 }
 </script>
