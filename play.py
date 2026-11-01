@@ -209,16 +209,19 @@ def main():
     started = shoot_at = 0.0
     times, frames, crops = [], [], []
     seen, last_kp, votes = [], None, []
+    reads, lives, ps = [], [], []
     robot = guess = finish = pick = None
     rnd = {}
 
     def start_round():
         nonlocal state, started, shoot_at, times, frames, crops, seen, last_kp, votes, robot, guess, finish, pick
+        nonlocal reads, lives, ps
         state = "count"
         started = time.perf_counter()
         shoot_at = started + 3 * BEAT
         times, frames, crops = [], [], []
         seen, last_kp, votes = [], None, []
+        reads, lives, ps = [], [], []
         robot = guess = finish = pick = None
 
     def save_round():
@@ -232,6 +235,7 @@ def main():
             fps=np.float32(fps), beat=np.float32(BEAT), player=args.player,
             robot=rnd["robot"], guess=rnd["guess"] or "", cutoff=np.float32(args.cutoff),
             react=react, lock_t=np.float32(rnd["lock_t"]),
+            live=np.array(lives), live_p=np.array(ps, dtype=np.float32),  # per frame
         )
         counts[rnd["label"]] += 1
         # landed crops
@@ -267,24 +271,40 @@ def main():
             times.append(t)
             frames.append(kp)
             crops.append(img)
+            lives.append(live or "")
+            ps.append(np.nan if live_p is None else live_p)
             put(frame, WORDS[min(int((now - started) / BEAT), 3)], 90, 2.2)
 
             # landing
-            landed = None
+            landed = land_t = None
             lost = np.isnan(kp).any()
             if live and t >= 0:
                 votes.append(live)
-            if not lost or (clf and img is not None):
+            if clf is not None:
                 # held box = assume still
-                still = (lost and clf is not None) or (last_kp is not None and motion(last_kp, kp) < STILL)
-                seen = seen + [(live, t)] if t >= LOOK_FROM and still and live else []
+                still = lost or (last_kp is not None and motion(last_kp, kp) < STILL)
                 if not lost:
                     last_kp = kp
+                if t >= LOOK_FROM:
+                    reads.append((live, t, still))
+                # 3 of last 4, gaps ok
+                last4 = [r for r in reads[-(STABLE + 1):] if r[0]]
+                moves = [m for m, _, _ in last4]
+                if moves:
+                    top = max(set(moves), key=moves.count)
+                    hits = [r for r in last4 if r[0] == top]
+                    # rock = fist stopped pumping
+                    if len(hits) >= STABLE and (top != "rock" or (t >= ROCK_AFTER and all(r[2] for r in hits))):
+                        landed, land_t = top, hits[0][1]
+            elif not lost:
+                still = last_kp is not None and motion(last_kp, kp) < STILL
+                seen = seen + [(live, t)] if t >= LOOK_FROM and still and live else []
+                last_kp = kp
                 recent = [p for p, _ in seen[-STABLE:]]
                 if len(recent) == STABLE:
                     top = max(set(recent), key=recent.count)
                     if recent.count(top) >= STABLE - 1 and (top != "rock" or t >= ROCK_AFTER):  # glitch
-                        landed = top
+                        landed, land_t = top, seen[-STABLE][1]
 
             # guess
             if pick is None and t >= args.cutoff:
@@ -295,7 +315,7 @@ def main():
                 put(frame, f"robot: {robot}", 170, 1.4, (120, 200, 255))
 
             if finish is None and (landed or t > TIMEOUT):
-                finish = (overrule(landed, votes), seen[-STABLE][1] if landed else None, t)
+                finish = (overrule(landed, votes), land_t, t)
             # react
             if react and finish:
                 if pick is None:

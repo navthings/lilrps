@@ -14,7 +14,7 @@ def result(you: str, robot: str) -> str:
     return "win" if COUNTER[you] == robot else "loss"
 
 
-guess, react, locks, wrong = Counter(), Counter(), [], Counter()
+guess, react, locks, wrong = Counter(), Counter(), {m: [] for m in MOVES}, Counter()
 for f in sorted(ROUNDS.glob("*.npz")):
     z = np.load(f)
     you = str(z["label"])
@@ -26,7 +26,7 @@ for f in sorted(ROUNDS.glob("*.npz")):
             wrong[(you, g)] += 1
     if "react" in z.files and bool(z["react"]):
         react[result(you, str(z["robot"]))] += 1
-        locks.append(float(z["lock_t"]))
+        locks[you].append(float(z["lock_t"]))
 
 
 def line(name: str, c: Counter):
@@ -37,7 +37,8 @@ def line(name: str, c: Counter):
 
 line("guess mode (commits at +0.3s)", guess)
 line("react mode", react)
-if locks:
-    print(f"react locks in at {np.median(locks) * 1000:+.0f}ms from shoot (median of {len(locks)})")
+for m, ls in locks.items():
+    if ls:
+        print(f"  {m} locks in at {np.median(ls) * 1000:+.0f}ms from shoot (median of {len(ls)})")
 for (you, g), n in wrong.most_common(3):
     print(f"  threw {you}, guessed {g}: {n}x")

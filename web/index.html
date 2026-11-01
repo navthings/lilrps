@@ -235,16 +235,19 @@ try {
       put(WORDS[Math.min(Math.floor((now - started) / BEAT), 3)], 90, 2.2);
 
       // landing
-      let landed = null;
+      let landed = null, landT = null;
       if (live && t >= 0) votes.push(live);
       if (kp || box) {
         const still = !kp || motion(lastKp, kp) < STILL;
-        seen = t >= LOOK_FROM && still && live ? [...seen, [live, t]] : [];
         if (kp) lastKp = kp;
-        const recent = seen.slice(-STABLE).map(s => s[0]);
-        if (recent.length === STABLE) {
-          const top = MOVES.reduce((a, m) => (recent.filter(r => r === m).length > recent.filter(r => r === a).length ? m : a));
-          if (recent.filter(r => r === top).length >= STABLE - 1 && (top !== "rock" || t >= ROCK_AFTER)) landed = top;
+        if (t >= LOOK_FROM) seen.push([live, t, still]);
+        // 3 of last 4, gaps ok
+        const last4 = seen.slice(-(STABLE + 1)).filter(r => r[0]);
+        if (last4.length) {
+          const top = MOVES.reduce((a, m) => (last4.filter(r => r[0] === m).length > last4.filter(r => r[0] === a).length ? m : a));
+          const hits = last4.filter(r => r[0] === top);
+          // rock = fist stopped pumping
+          if (hits.length >= STABLE && (top !== "rock" || (t >= ROCK_AFTER && hits.every(r => r[2])))) [landed, landT] = [top, hits[0][1]];
         }
       }
 
@@ -255,7 +258,7 @@ try {
       }
       if (robot) put(`robot: ${robot}`, 170, 1.4, "#ffc878");
 
-      if (!finish && (landed || t > TIMEOUT)) finish = [overrule(landed, votes), landed ? seen[seen.length - STABLE][1] : null, t];
+      if (!finish && (landed || t > TIMEOUT)) finish = [overrule(landed, votes), landT, t];
       // react
       if (REACT && finish) {
         guess ||= predict(times, frames);
