@@ -76,6 +76,8 @@ theres also a 4th answer now, **none**. it learns it from boxes slid off the han
 ```
 .venv/bin/python hagrid.py      # needs the 3.5gb hagrid-sample-120k-384p zip unzipped in data/hagrid/
 .venv/bin/python train_r18.py   # ~20 min on an m5, writes results/classifier_r18.safetensors
+.venv/bin/python train_r18.py --init --all --epochs 2 --lr 1e-4   # ~4 min, keeps training it after you record new bursts
+uv run export_web.py            # puts the new model in the browser version (web/classifier_r18.onnx)
 ```
 
 play.py uses classifier_r18 if it exists, otherwise the old small one. about 4ms a frame on an m5
@@ -93,7 +95,13 @@ on the 65 crops play.py saved from real rounds, by eye its right on everything i
 
 the referee also got a rule: everyones hand starts as a fist, so a fist in the first 0.45s after shoot doesnt count yet, and if paper or scissors shows up in 2 sure frames it beats rock
 
-**status: still weak on close up head-on scissors.** next: record some head-on scissors bursts, and save raw frames from real rounds so i can test the whole referee on them
+then i played it and it called my rock scissors constantly (250 of 415 fists). turns out a knuckles-forward fist, curled fingers pointing at the camera, looks almost exactly like my head-on scissors, and it had only ever seen side-on fists. recorded fresh bursts (415 rock, 384 scissors, 356 paper), kept training on them, and made the referee stricter: paper or scissors needs 3+ frames and a third of the votes after shoot to beat rock
+
+![knuckles-forward fist vs side-on fist vs head-on scissors](assets/journal/11_why.jpg)
+
+the browser version runs the same resnet18, exported to onnx (22mb, fp16 weights) and run with onnxruntime-web, webgpu if your browser has it. checked it gives the same answers as the mlx one on 40 crops
+
+**status: rock, paper and scissors all work live, head-on included.** next: save raw frames from real rounds so i can test the whole referee on them, not just crops
 
 ## the early guess
 
