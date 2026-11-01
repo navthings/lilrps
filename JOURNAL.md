@@ -65,7 +65,9 @@ now the robot waits for the referee to lock in your move and throws the counter 
 
 the early guess still runs. the result screen shows when the robot locked in and what the keypoint guess would've thrown, so i can still see if the prediction side is any good. `--predict` (or `?predict` on the browser version) puts the old mode back.
 
-one catch: rock. everyone's hand starts as a fist, so the referee won't call rock until 0.45s after shoot. against rock the robot's paper shows up late enough that you might notice. paper and scissors lock about 3 frames after your hand lands, which is way harder to see.
+one catch: rock. everyone's hand starts as a fist, so the referee won't call rock until 0.45s after shoot. against rock the robot's paper shows up late enough that you might notice. paper and scissors lock 2 frames after your hand lands. my saved rounds ran at about 18fps, so that's roughly 110ms, which is way harder to see.
+
+![when my hand lands vs when the robot throws](assets/journal/12_lock_times.png)
 
 ### the irl one
 
@@ -74,6 +76,8 @@ on screen, reacting is free. a real hand has to actually move. a cheap sg90 serv
 **tendon hand, 2 servos.** printed fingers, fishing line to the servo, elastic pulls them back open. servo A does index + middle, servo B does ring + pinky + thumb. both curled = rock, both open = paper, A open and B curled = scissors. cheap and looks like a real hand, but the string stretches and it needs a lot of tuning.
 
 **linkage fingers, 2 servos.** same 2 groups, but each finger is a rigid 4-bar linkage driven straight off the servo. no string, no elastic, same pose every time. more cad work, but probably the best one for this.
+
+![2 servos is enough for all 3 moves](assets/journal/13_two_servos.png)
 
 **spinning wheel, 1 servo.** a 3-sided thing with a fist, palm and V on it that turns to the right face. worst case is 120 degrees and nothing can jam. looks like a toy, but it'd be a quick way to test the timing before building fingers.
 
@@ -84,6 +88,8 @@ the brain stays on my mac (resnet18 is about 4ms a frame there). play.py sends o
 ### making it fast
 
 starting the countdown half curled means no move is ever a full sweep. faster micro servos help too, some are around 0.06s per 60 degrees. but the real fix is bringing the early guess back as a head start: at +0.3s the hand starts moving toward the guess, then when the referee locks in it corrects if the guess was wrong. most rounds it's already there by the time it needs to be.
+
+![rough timing for the irl hand](assets/journal/14_irl_timing.png)
 
 prediction gets it moving early, reaction makes sure it's right. that's the plan.
 
