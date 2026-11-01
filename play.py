@@ -1,5 +1,6 @@
 import argparse
 import random
+import threading
 import time
 from pathlib import Path
 
@@ -134,7 +135,34 @@ def open_camera(index: int):
     if not cap.isOpened():
         raise SystemExit("no camera. run this from apple terminal, or check system settings > privacy > camera")
     cap.set(cv2.CAP_PROP_FPS, 60)
+    print(f"camera says {cap.get(cv2.CAP_PROP_FRAME_WIDTH):.0f}x{cap.get(cv2.CAP_PROP_FRAME_HEIGHT):.0f} at {cap.get(cv2.CAP_PROP_FPS):.0f}fps")
     return cap
+
+
+class Camera:
+    # grabs frames on its own thread so slow frames dont make us miss the next one
+    def __init__(self, cap):
+        self.cap, self.frame, self.n, self.fps = cap, None, 0, 0.0
+        self.cond = threading.Condition()
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def run(self):
+        last = time.perf_counter()
+        while True:
+            ok, f = self.cap.read()
+            now = time.perf_counter()
+            with self.cond:
+                self.fps = 0.9 * self.fps + 0.1 / max(now - last, 1e-6)
+                last = now
+                self.frame, self.n = (f, self.n + 1) if ok else (None, -1)
+                self.cond.notify_all()
+            if not ok:
+                return
+
+    def read(self, seen: int):
+        with self.cond:
+            self.cond.wait_for(lambda: self.n != seen)
+            return self.frame, self.n
 
 
 def main():
@@ -156,6 +184,7 @@ def main():
                                      min_detection_confidence=0.3, min_tracking_confidence=0.3)
     draw = mp.solutions.drawing_utils
     cap = open_camera(args.camera)
+    cam, seen_n = Camera(cap), 0
     boxer = hand.Boxer()
     clf = None if args.rules else hand.load()
     print(f"referee: {'hand classifier' if clf else 'finger rules'}")
@@ -176,7 +205,7 @@ def main():
     state = "idle"
     debug = not args.record
     rec_t = 0.0
-    fps, last = 0.0, time.perf_counter()
+    fps, work, last = 0.0, 0.0, time.perf_counter()
     started = shoot_at = 0.0
     times, frames, crops = [], [], []
     seen, last_kp, votes = [], None, []
@@ -213,8 +242,8 @@ def main():
             cv2.imwrite(str(CROPS / rnd["label"] / f"{name[:-4]}_{i}.jpg"), c)
 
     while True:
-        ok, frame = cap.read()
-        if not ok:
+        frame, seen_n = cam.read(seen_n)
+        if frame is None:
             raise SystemExit("camera stopped giving frames")
         frame = cv2.flip(frame, 1)
         now = time.perf_counter()
@@ -296,7 +325,7 @@ def main():
             m = motion(frames[-2], frames[-1]) if state == "count" and len(frames) > 1 else 0.0
             sees = (live or "-") + (f" {live_p:.0%}" if live_p is not None else "")
             light = frame.mean()
-            put(frame, f"fps {fps:.0f}   motion {m:.3f}   sees {sees}   light {light:.0f}{' (too dark)' if light < DARK else ''}",
+            put(frame, f"cam {cam.fps:.0f}fps   loop {fps:.0f}fps   work {work:.0f}ms   motion {m:.3f}   sees {sees}   light {light:.0f}{' (too dark)' if light < DARK else ''}",
                 frame.shape[0] - 60, 0.6, (180, 255, 180) if light >= DARK else (80, 80, 255))
             c = counts
             put(frame, f"saved  rock {c['rock']}  paper {c['paper']}  scissors {c['scissors']}",
@@ -314,6 +343,7 @@ def main():
                 writer.write(frame)
                 rec_t += 1 / REC_FPS
 
+        work = 0.9 * work + 0.1 * (time.perf_counter() - now) * 1000
         cv2.imshow("lilrps", frame)
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
