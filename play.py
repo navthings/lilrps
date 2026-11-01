@@ -174,6 +174,7 @@ def main():
     ap.add_argument("--predict", action="store_true", help="old mode: robot commits to the keypoint guess at the cutoff instead of reacting")
     ap.add_argument("--random", action="store_true", help="ignore the trained model and throw randomly")
     ap.add_argument("--rules", action="store_true", help="referee uses finger rules instead of the hand classifier")
+    ap.add_argument("--hand", nargs="?", const="auto", help="drive the irl hand over usb (port, or leave empty to find it)")
     args = ap.parse_args()
 
     ROUNDS.mkdir(parents=True, exist_ok=True)
@@ -201,6 +202,13 @@ def main():
     else:
         print(f"robot: {'trained model, commits ' + format(args.cutoff, '+.2f') + 's after shoot' if model else 'random'}")
 
+    arm = None
+    if args.hand:
+        from irl.link import Hand
+        arm = Hand(args.hand)
+        arm.pose("paper")
+        print(f"irl hand on {arm.port}")
+
     writer = None
     state = "idle"
     debug = not args.record
@@ -223,6 +231,8 @@ def main():
         seen, last_kp, votes = [], None, []
         reads, lives, ps = [], [], []
         robot = guess = finish = pick = None
+        if arm:
+            arm.pose("half")
 
     def save_round():
         name = f"{args.player}_{int(time.time() * 1000)}.npz"
@@ -311,6 +321,9 @@ def main():
                 pick, guess = robot_move(model, times, frames, args.cutoff)
                 if not react:
                     robot = pick
+                # head start
+                if arm and finish is None:
+                    arm.pose(pick)
             if robot:
                 put(frame, f"robot: {robot}", 170, 1.4, (120, 200, 255))
 
@@ -325,6 +338,8 @@ def main():
                 rnd = {"referee": finish[0], "label": finish[0], "done_t": finish[1],
                        "robot": robot, "guess": guess, "lock_t": finish[2]}
                 state = "result"
+                if arm:
+                    arm.pose(robot)
 
         elif state == "result":
             if rnd["label"]:
@@ -382,6 +397,8 @@ def main():
             start_round()
 
     cap.release()
+    if arm:
+        arm.close()
     if writer:
         writer.release()
     cv2.destroyAllWindows()

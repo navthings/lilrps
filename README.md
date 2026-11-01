@@ -35,6 +35,7 @@ after each round it tells u what u threw. if its wrong press r / p / s to fix it
 flags:
 - `--predict` old mode, robot commits to the keypoint guess at the cutoff instead of reacting (browser: add `?predict` to the url)
 - `--cutoff 0.3` how many seconds after shoot the keypoint guess gets made. lower = harder for it
+- `--hand` drives the irl hand over usb (see [irl/](irl/README.md))
 - `--random` robot ignores the model and just throws random
 - `--rules` referee uses the old finger rules instead of the hand classifier
 - `--player name` tags rounds with whose hand it is
@@ -129,6 +130,12 @@ this one still runs on mediapipe points, so its still worse head on than the cla
 if the referee keeps getting stuff wrong tweak STILL, UP_RATIO, SPREAD and FOLDED at the top of play.py. the debug line shows motion and brightness and goes red when its too dark, cuz dim light = blurry hand = mediapipe drops it
 
 best results: good light, and ur hand side on to the camera. head on works now but side on is still easier for it
+
+## the irl one
+
+a real hand now. 2 servos, 4 printed fingers, a pico. cad, wiring, pico code and the build guide are all in [irl/](irl/README.md)
+
+![rock paper scissors](assets/journal/15_irl_poses.png)
 
 ## data
 
