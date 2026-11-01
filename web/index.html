@@ -11,13 +11,14 @@
 <canvas id="c"></canvas>
 <script type="module">
 import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.0/vision_bundle.mjs";
-import { parse, Predictor } from "./nn.js";
+import { parse, Predictor, crop } from "./nn.js";
 
 const MOVES = ["rock", "paper", "scissors"];
 const COUNTER = { rock: "paper", paper: "scissors", scissors: "rock" };
 const WORDS = ["rock", "paper", "scissors", "shoot!"];
 const BEAT = 0.45, STILL = 0.015, STABLE = 3, LOOK_FROM = -0.2, TIMEOUT = 1.5, CUTOFF = 0.3, SURE = 0.6;
-const SAVE = 112, SIZE = 96, PAD = 2.2, HOLD = 1.0, SMOOTH = 0.5, W = 8;
+const ROCK_AFTER = 0.45, VOTES = 3;
+const PAD = 2.2, HOLD = 1.0, SMOOTH = 0.5, W = 8;
 const PALM = [0, 5, 9, 13, 17];
 
 const msg = document.getElementById("msg");
@@ -47,7 +48,8 @@ try {
   await new Promise(r => (worker.onmessage = r));
   worker.onmessage = e => {
     const i = e.data.indexOf(Math.max(...e.data));
-    [live, liveP, busy] = [e.data[i] >= SURE ? MOVES[i] : null, e.data[i], false];
+    // 3 = none
+    [live, liveP, busy] = [e.data[i] >= SURE && i < 3 ? MOVES[i] : null, e.data[i], false];
   };
   busy = false;
   msg.remove();
@@ -61,23 +63,6 @@ try {
       box = box ? box.map((b, i) => SMOOTH * b + (1 - SMOOTH) * nb[i]) : nb;
       seenAt = now;
     } else if (now - seenAt > HOLD) box = null;
-  }
-
-  // bgr
-  function crop(px, [cx, cy, side]) {
-    const out = new Float32Array(SIZE * SIZE * 3), o = (SAVE - SIZE) / 2, k = side / SAVE;
-    for (let v = 0; v < SIZE; v++) {
-      const sy = Math.min(Math.max(cy - side / 2 + (v + o) * k, 0), h - 1), y0 = Math.floor(sy), y1 = Math.min(y0 + 1, h - 1), fy = sy - y0;
-      for (let u = 0; u < SIZE; u++) {
-        const sx = Math.min(Math.max(cx - side / 2 + (u + o) * k, 0), w - 1), x0 = Math.floor(sx), x1 = Math.min(x0 + 1, w - 1), fx = sx - x0;
-        const a = (y0 * w + x0) * 4, b = (y0 * w + x1) * 4, c = (y1 * w + x0) * 4, d = (y1 * w + x1) * 4;
-        for (let ch = 0; ch < 3; ch++) {
-          const top = px[a + ch] * (1 - fx) + px[b + ch] * fx, bot = px[c + ch] * (1 - fx) + px[d + ch] * fx;
-          out[(v * SIZE + u) * 3 + 2 - ch] = (top * (1 - fy) + bot * fy) / 255 - 0.5;
-        }
-      }
-    }
-    return out;
   }
 
   function motion(a, b) {
@@ -99,6 +84,15 @@ try {
     return MOVES[y.indexOf(Math.max(...y))];
   }
 
+  // everyone starts on a fist
+  function overrule(landed, votes) {
+    if (landed && landed !== "rock") return landed;
+    const other = votes.filter(v => v !== "rock");
+    if (!other.length) return landed;
+    const top = MOVES.reduce((a, m) => (other.filter(o => o === m).length > other.filter(o => o === a).length ? m : a));
+    return other.filter(o => o === top).length >= Math.max(VOTES, votes.length / 3) ? top : landed;
+  }
+
   function winner(you, robot) {
     if (you === robot) return "draw";
     return COUNTER[you] === robot ? "robot wins" : "you win";
@@ -113,14 +107,14 @@ try {
     ctx.fillText(text, 30, y);
   }
 
-  let state = "idle", started, shootAt, times, frames, seen, lastKp, robot, guess, finish, rnd;
+  let state = "idle", started, shootAt, times, frames, seen, votes, lastKp, robot, guess, finish, rnd;
   let fps = 0, last = performance.now();
 
   function start() {
     state = "count";
     started = performance.now() / 1000;
     shootAt = started + 3 * BEAT;
-    times = []; frames = []; seen = []; lastKp = null;
+    times = []; frames = []; seen = []; votes = []; lastKp = null;
     robot = guess = finish = null;
   }
 
@@ -149,7 +143,7 @@ try {
     track(kp, now);
     if (box && !busy) {
       busy = true;
-      const img = crop(ctx.getImageData(0, 0, w, h).data, box);
+      const img = crop(ctx.getImageData(0, 0, w, h).data, w, h, box);
       worker.postMessage(img, [img.buffer]);
     }
     if (!box) live = liveP = null;
@@ -181,6 +175,7 @@ try {
 
       // landing
       let landed = null;
+      if (live && t >= 0) votes.push(live);
       if (kp || box) {
         const still = !kp || motion(lastKp, kp) < STILL;
         seen = t >= LOOK_FROM && still && live ? [...seen, [live, t]] : [];
@@ -188,7 +183,7 @@ try {
         const recent = seen.slice(-STABLE).map(s => s[0]);
         if (recent.length === STABLE) {
           const top = MOVES.reduce((a, m) => (recent.filter(r => r === m).length > recent.filter(r => r === a).length ? m : a));
-          if (recent.filter(r => r === top).length >= STABLE - 1) landed = top;
+          if (recent.filter(r => r === top).length >= STABLE - 1 && (top !== "rock" || t >= ROCK_AFTER)) landed = top;
         }
       }
 
@@ -196,7 +191,7 @@ try {
       if (!robot && t >= CUTOFF) robot = COUNTER[(guess = predict(times, frames))];
       if (robot) put(`robot: ${robot}`, 170, 1.4, "#ffc878");
 
-      if (!finish && (landed || t > TIMEOUT)) finish = [landed, landed ? seen[seen.length - STABLE][1] : null];
+      if (!finish && (landed || t > TIMEOUT)) finish = [overrule(landed, votes), landed ? seen[seen.length - STABLE][1] : null];
       if (finish && robot) {
         rnd = { you: finish[0], done: finish[1], robot, guess };
         state = "result";

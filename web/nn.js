@@ -32,60 +32,21 @@ export function Predictor(w) {
   return x => linear(relu(linear(relu(linear(x, ...L(0))), ...L(3))), ...L(5));
 }
 
-// conv+relu+pool
-function block(x, s, { cin, cout, wt, b }) {
-  const h = s >> 1, n = 9 * cin, out = new Float32Array(h * h * cout), patch = new Float32Array(n);
-  for (let y = 0; y < s; y++) {
-    for (let x0 = 0; x0 < s; x0++) {
-      // im2col
-      patch.fill(0);
-      for (let ky = 0; ky < 3; ky++) {
-        const iy = y + ky - 1;
-        if (iy < 0 || iy >= s) continue;
-        for (let kx = 0; kx < 3; kx++) {
-          const ix = x0 + kx - 1;
-          if (ix < 0 || ix >= s) continue;
-          patch.set(x.subarray((iy * s + ix) * cin, (iy * s + ix + 1) * cin), (ky * 3 + kx) * cin);
-        }
-      }
-      const op = ((y >> 1) * h + (x0 >> 1)) * cout;
-      for (let o = 0; o < cout; o++) {
-        const wo = o * n;
-        let s0 = b[o], s1 = 0, s2 = 0, s3 = 0, i = 0;
-        for (; i + 3 < n; i += 4) {
-          s0 += wt[wo + i] * patch[i];
-          s1 += wt[wo + i + 1] * patch[i + 1];
-          s2 += wt[wo + i + 2] * patch[i + 2];
-          s3 += wt[wo + i + 3] * patch[i + 3];
-        }
-        for (; i < n; i++) s0 += wt[wo + i] * patch[i];
-        const v = s0 + s1 + s2 + s3;
-        if (v > out[op + o]) out[op + o] = v;
+const MEAN = [0.485, 0.456, 0.406], STD = [0.229, 0.224, 0.225];
+
+// box -> 112px, imagenet norm, nchw
+export function crop(px, w, h, [cx, cy, side], size = 112) {
+  const out = new Float32Array(3 * size * size), k = side / size, plane = size * size;
+  for (let v = 0; v < size; v++) {
+    const sy = Math.min(Math.max(cy - side / 2 + v * k, 0), h - 1), y0 = Math.floor(sy), y1 = Math.min(y0 + 1, h - 1), fy = sy - y0;
+    for (let u = 0; u < size; u++) {
+      const sx = Math.min(Math.max(cx - side / 2 + u * k, 0), w - 1), x0 = Math.floor(sx), x1 = Math.min(x0 + 1, w - 1), fx = sx - x0;
+      const a = (y0 * w + x0) * 4, b = (y0 * w + x1) * 4, c = (y1 * w + x0) * 4, d = (y1 * w + x1) * 4;
+      for (let ch = 0; ch < 3; ch++) {
+        const top = px[a + ch] * (1 - fx) + px[b + ch] * fx, bot = px[c + ch] * (1 - fx) + px[d + ch] * fx;
+        out[ch * plane + v * size + u] = ((top * (1 - fy) + bot * fy) / 255 - MEAN[ch]) / STD[ch];
       }
     }
   }
   return out;
-}
-
-export function Classifier(w) {
-  const chans = [3, 24, 48, 96, 160];
-  // fold batchnorm
-  const layers = chans.slice(1).map((cout, l) => {
-    const cin = chans[l], wt = w[`convs.${l}.weight`].slice(), b = w[`convs.${l}.bias`].slice();
-    const g = w[`norms.${l}.weight`], beta = w[`norms.${l}.bias`];
-    const m = w[`norms.${l}.running_mean`], v = w[`norms.${l}.running_var`];
-    for (let o = 0; o < cout; o++) {
-      const k = g[o] / Math.sqrt(v[o] + 1e-5);
-      for (let i = 0; i < 9 * cin; i++) wt[o * 9 * cin + i] *= k;
-      b[o] = (b[o] - m[o]) * k + beta[o];
-    }
-    return { cin, cout, wt, b };
-  });
-  return (img, size) => {
-    let x = img, s = size;
-    for (const L of layers) x = block(x, s, L), s >>= 1;
-    const c = 160, f = new Float32Array(c);
-    for (let p = 0; p < s * s; p++) for (let i = 0; i < c; i++) f[i] += x[p * c + i] / (s * s);
-    return softmax(linear(f, w["head.weight"], w["head.bias"]));
-  };
 }
