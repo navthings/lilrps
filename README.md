@@ -10,7 +10,9 @@ a rock paper scissors robot that reads ur hand before u even finish throwing. (b
 
 ## what it does
 
-mac webcam -> mediapipe (the google hand thingy) finds 21 points on ur hand -> a tiny model guesses ur move from the first few frames -> robot throws whatever beats it
+mac webcam -> mediapipe (the google hand thingy) finds 21 points on ur hand -> resnet18 reads the crop -> the frame the referee locks in ur move, robot throws whatever beats it
+
+so it always wins now. same trick as the ishikawa lab janken robot (tokyo uni, look it up its insane): dont predict, just react faster than u can notice. the old early guess still runs and shows up on the result screen so u can see if it wouldve got it (`--predict` puts it back in charge)
 
 trained on 82 rounds of my hand, it reads my throw like 0.2s before it lands and beat me 11 out of 11 live on rounds it had never seen. lost to my own robot 11 times in a row. kinda embarassing tbh
 
@@ -31,7 +33,8 @@ run it from apple terminal or macos wont ask for camera permission (learned that
 after each round it tells u what u threw. if its wrong press r / p / s to fix it, x bins the round, space saves it and goes again. d hides the debug line, q quits
 
 flags:
-- `--cutoff 0.3` how many seconds after shoot the robot has to commit. lower = harder for it
+- `--predict` old mode, robot commits to the keypoint guess at the cutoff instead of reacting (browser: add `?predict` to the url)
+- `--cutoff 0.3` how many seconds after shoot the keypoint guess gets made. lower = harder for it
 - `--random` robot ignores the model and just throws random
 - `--rules` referee uses the old finger rules instead of the hand classifier
 - `--player name` tags rounds with whose hand it is

@@ -142,7 +142,8 @@ def main():
     ap.add_argument("--player", default="nav", help="whose hand this is, saved with every round")
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--record", action="store_true", help="save the whole session as a video in clips/")
-    ap.add_argument("--cutoff", type=float, default=0.3, help="seconds after shoot the robot has to commit")
+    ap.add_argument("--cutoff", type=float, default=0.3, help="seconds after shoot the keypoint guess is made")
+    ap.add_argument("--predict", action="store_true", help="old mode: robot commits to the keypoint guess at the cutoff instead of reacting")
     ap.add_argument("--random", action="store_true", help="ignore the trained model and throw randomly")
     ap.add_argument("--rules", action="store_true", help="referee uses finger rules instead of the hand classifier")
     args = ap.parse_args()
@@ -165,7 +166,11 @@ def main():
         model = Predictor()
         model.load_weights(str(weights))
         model.eval()
-    print(f"robot: {'trained model, commits ' + format(args.cutoff, '+.2f') + 's after shoot' if model else 'random'}")
+    react = not args.predict
+    if react:
+        print("robot: reacts to the referee the frame it locks in")
+    else:
+        print(f"robot: {'trained model, commits ' + format(args.cutoff, '+.2f') + 's after shoot' if model else 'random'}")
 
     writer = None
     state = "idle"
@@ -175,17 +180,17 @@ def main():
     started = shoot_at = 0.0
     times, frames, crops = [], [], []
     seen, last_kp, votes = [], None, []
-    robot = guess = finish = None
+    robot = guess = finish = pick = None
     rnd = {}
 
     def start_round():
-        nonlocal state, started, shoot_at, times, frames, crops, seen, last_kp, votes, robot, guess, finish
+        nonlocal state, started, shoot_at, times, frames, crops, seen, last_kp, votes, robot, guess, finish, pick
         state = "count"
         started = time.perf_counter()
         shoot_at = started + 3 * BEAT
         times, frames, crops = [], [], []
         seen, last_kp, votes = [], None, []
-        robot = guess = finish = None
+        robot = guess = finish = pick = None
 
     def save_round():
         name = f"{args.player}_{int(time.time() * 1000)}.npz"
@@ -197,6 +202,7 @@ def main():
             done_t=np.float32(rnd["done_t"] if rnd["done_t"] is not None else np.nan),
             fps=np.float32(fps), beat=np.float32(BEAT), player=args.player,
             robot=rnd["robot"], guess=rnd["guess"] or "", cutoff=np.float32(args.cutoff),
+            react=react, lock_t=np.float32(rnd["lock_t"]),
         )
         counts[rnd["label"]] += 1
         # landed crops
@@ -251,17 +257,24 @@ def main():
                     if recent.count(top) >= STABLE - 1 and (top != "rock" or t >= ROCK_AFTER):  # glitch
                         landed = top
 
-            # commit
-            if robot is None and t >= args.cutoff:
-                robot, guess = robot_move(model, times, frames, args.cutoff)
+            # guess
+            if pick is None and t >= args.cutoff:
+                pick, guess = robot_move(model, times, frames, args.cutoff)
+                if not react:
+                    robot = pick
             if robot:
                 put(frame, f"robot: {robot}", 170, 1.4, (120, 200, 255))
 
             if finish is None and (landed or t > TIMEOUT):
-                finish = (overrule(landed, votes), seen[-STABLE][1] if landed else None)
+                finish = (overrule(landed, votes), seen[-STABLE][1] if landed else None, t)
+            # react
+            if react and finish:
+                if pick is None:
+                    pick, guess = robot_move(model, times, frames, args.cutoff)
+                robot = COUNTER[finish[0]] if finish[0] else pick
             if finish and robot:
                 rnd = {"referee": finish[0], "label": finish[0], "done_t": finish[1],
-                       "robot": robot, "guess": guess}
+                       "robot": robot, "guess": guess, "lock_t": finish[2]}
                 state = "result"
 
         elif state == "result":
@@ -270,8 +283,10 @@ def main():
                 put(frame, winner(rnd["label"], rnd["robot"]), 110, 1.6)
                 if rnd["done_t"] is not None:
                     put(frame, f"landed {rnd['done_t'] * 1000:+.0f}ms from shoot", 160, 0.8)
+                if react:
+                    put(frame, f"robot locked in {rnd['lock_t'] * 1000:+.0f}ms from shoot", 260, 0.7)
                 if rnd["guess"]:
-                    put(frame, f"it guessed {rnd['guess']} at {args.cutoff * 1000:+.0f}ms", 260, 0.7)
+                    put(frame, f"keypoint guess was {rnd['guess']}", 300 if react else 260, 0.7)
                 put(frame, "wrong move? r / p / s   x = bin it   space = next", 210, 0.7)
             else:
                 put(frame, "couldnt read your hand", 60)

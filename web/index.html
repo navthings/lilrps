@@ -20,6 +20,8 @@ const BEAT = 0.45, STILL = 0.015, STABLE = 3, LOOK_FROM = -0.2, TIMEOUT = 1.5, C
 const ROCK_AFTER = 0.45, VOTES = 3;
 const PAD = 2.2, HOLD = 1.0, SMOOTH = 0.5, W = 8;
 const PALM = [0, 5, 9, 13, 17];
+// ?predict = old mode
+const REACT = !new URLSearchParams(location.search).has("predict");
 
 const msg = document.getElementById("msg");
 const cv = document.getElementById("c"), ctx = cv.getContext("2d", { willReadFrequently: true });
@@ -246,13 +248,21 @@ try {
         }
       }
 
-      // commit
-      if (!robot && t >= CUTOFF) robot = COUNTER[(guess = predict(times, frames))];
+      // guess
+      if (!guess && t >= CUTOFF) {
+        guess = predict(times, frames);
+        if (!REACT) robot = COUNTER[guess];
+      }
       if (robot) put(`robot: ${robot}`, 170, 1.4, "#ffc878");
 
-      if (!finish && (landed || t > TIMEOUT)) finish = [overrule(landed, votes), landed ? seen[seen.length - STABLE][1] : null];
+      if (!finish && (landed || t > TIMEOUT)) finish = [overrule(landed, votes), landed ? seen[seen.length - STABLE][1] : null, t];
+      // react
+      if (REACT && finish) {
+        guess ||= predict(times, frames);
+        robot = COUNTER[finish[0] || guess];
+      }
       if (finish && robot) {
-        rnd = { you: finish[0], done: finish[1], robot, guess };
+        rnd = { you: finish[0], done: finish[1], robot, guess, lock: finish[2] };
         state = "result";
       }
     }
@@ -262,9 +272,12 @@ try {
         put(`you: ${rnd.you}   robot: ${rnd.robot}`, 60);
         put(winner(rnd.you, rnd.robot), 110, 1.6);
         if (rnd.done !== null) put(`landed ${Math.round(rnd.done * 1000)}ms from shoot`, 160, 0.8);
-        put(`it guessed ${rnd.guess} at +${CUTOFF * 1000}ms`, 210, 0.7);
+        if (REACT) {
+          put(`robot locked in ${Math.round(rnd.lock * 1000)}ms from shoot`, 210, 0.7);
+          put(`keypoint guess was ${rnd.guess}`, 250, 0.7);
+        } else put(`it guessed ${rnd.guess} at +${CUTOFF * 1000}ms`, 210, 0.7);
       } else put("couldnt read your hand", 60);
-      put("space / tap = next", 260, 0.7);
+      put("space / tap = next", REACT ? 300 : 260, 0.7);
     }
 
     put(`fps ${Math.round(fps)}   sees ${live || "-"}${liveP !== null ? ` ${Math.round(liveP * 100)}%` : ""}`, h - 25, 0.6, "#b4ffb4");
