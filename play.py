@@ -1,24 +1,15 @@
 import argparse
 import random
-import threading
 import time
-from pathlib import Path
 
 import cv2
-import mediapipe as mp
 import mlx.core as mx
 import numpy as np
 
 import hand
-from train import Predictor, window
+from hand import COUNTER, MOVES, put
 
-HERE = Path(__file__).parent
-ROUNDS = HERE / "data" / "rounds"
-CLIPS = HERE / "clips"
-CROPS = HERE / "data" / "crops"
-
-MOVES = ["rock", "paper", "scissors"]
-COUNTER = {"rock": "paper", "paper": "scissors", "scissors": "rock"}  # beats
+CLIPS = hand.HERE / "clips"
 WORDS = ["rock", "paper", "scissors", "shoot!"]
 
 BEAT = 0.45        # seconds
@@ -26,56 +17,13 @@ STILL = 0.015      # tune
 STABLE = 3         # frames
 LOOK_FROM = -0.2   # seconds
 TIMEOUT = 1.5      # seconds
-UP_RATIO = 1.1
-SPREAD = 0.8       # v gap / palm width
-FOLDED = 0.9       # curled tips fold back
 DARK = 70          # brightness
 REC_FPS = 15
-SURE = 0.6         # classifier confidence
-KEEP = 6           # crops saved per round
+SURE = 0.6         # confidence
+KEEP = 6           # crops per round
 ROCK_AFTER = 0.45  # seconds
 VOTES = 3          # frames
-
-# tip/knuckle
-FINGERS = [(8, 6), (12, 10), (16, 14), (20, 18)]
 PALM = [0, 5, 9, 13, 17]
-
-
-def keypoints(hands, frame):
-    h, w = frame.shape[:2]
-    res = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    if not res.multi_hand_landmarks:
-        return np.full((21, 3), np.nan, dtype=np.float32), res
-    lm = res.multi_hand_landmarks[0].landmark
-    # aspect
-    return np.array([[p.x * w / h, p.y, p.z] for p in lm], dtype=np.float32), res
-
-
-def read_pose(kp: np.ndarray) -> str | None:
-    if np.isnan(kp).any():
-        return None
-    wrist = kp[0, :2]
-    ratio = [np.linalg.norm(kp[tip, :2] - wrist) / np.linalg.norm(kp[knuckle, :2] - wrist)
-             for tip, knuckle in FINGERS]
-    index, middle, ring, pinky = [r > UP_RATIO for r in ratio]
-    if ring and pinky:
-        return "paper"
-    # v, not fist
-    spread = np.linalg.norm(kp[8, :2] - kp[12, :2]) / np.linalg.norm(kp[5, :2] - kp[17, :2])
-    if spread > SPREAD and min(ratio[:2]) > FOLDED:
-        return "scissors"
-    if not ring and not pinky:
-        return "scissors" if index or middle else "rock"
-    return None
-
-
-def see(kp: np.ndarray, img, clf) -> tuple[str | None, float | None]:
-    if clf is None:
-        return read_pose(kp), None
-    if img is None:
-        return None, None
-    move, p = clf(img)
-    return (move if p >= SURE and move in MOVES else None), p
 
 
 def overrule(landed: str | None, votes: list) -> str | None:
@@ -97,7 +45,7 @@ def motion(a: np.ndarray, b: np.ndarray) -> float:
 def robot_move(model, times: list, frames: list, cutoff: float):
     if model is None:
         return random.choice(MOVES), None
-    x = window({"t": np.array(times), "kp": np.stack(frames)}, cutoff)
+    x = hand.window({"t": np.array(times), "kp": np.stack(frames)}, cutoff)
     guess = MOVES[int(model(mx.array(x[None])).argmax(axis=1).item())]
     return COUNTER[guess], guess
 
@@ -108,61 +56,13 @@ def winner(you: str, robot: str) -> str:
     return "robot wins" if COUNTER[you] == robot else "you win"
 
 
-def put(frame, text, y, scale=1.0, color=(255, 255, 255)):
-    for c, t in (((0, 0, 0), 6), (color, 2)):
-        cv2.putText(frame, text, (30, y), cv2.FONT_HERSHEY_SIMPLEX, scale, c, t, cv2.LINE_AA)
-
-
 def count_rounds() -> dict:
     counts = {m: 0 for m in MOVES}
-    for f in ROUNDS.glob("*.npz"):
+    for f in hand.ROUNDS.glob("*.npz"):
         label = str(np.load(f)["label"])
         if label in counts:
             counts[label] += 1
     return counts
-
-
-def open_camera(index: int):
-    cap = cv2.VideoCapture(index)
-    waited = 0
-    while not cap.isOpened() and waited < 30:
-        # permission
-        if waited == 0:
-            print("waiting for camera permission, click allow on the popup...")
-        time.sleep(1)
-        waited += 1
-        cap = cv2.VideoCapture(index)
-    if not cap.isOpened():
-        raise SystemExit("no camera. run this from apple terminal, or check system settings > privacy > camera")
-    cap.set(cv2.CAP_PROP_FPS, 60)
-    print(f"camera says {cap.get(cv2.CAP_PROP_FRAME_WIDTH):.0f}x{cap.get(cv2.CAP_PROP_FRAME_HEIGHT):.0f} at {cap.get(cv2.CAP_PROP_FPS):.0f}fps")
-    return cap
-
-
-class Camera:
-    # grabs frames on its own thread so slow frames dont make us miss the next one
-    def __init__(self, cap):
-        self.cap, self.frame, self.n, self.fps = cap, None, 0, 0.0
-        self.cond = threading.Condition()
-        threading.Thread(target=self.run, daemon=True).start()
-
-    def run(self):
-        last = time.perf_counter()
-        while True:
-            ok, f = self.cap.read()
-            now = time.perf_counter()
-            with self.cond:
-                self.fps = 0.9 * self.fps + 0.1 / max(now - last, 1e-6)
-                last = now
-                self.frame, self.n = (f, self.n + 1) if ok else (None, -1)
-                self.cond.notify_all()
-            if not ok:
-                return
-
-    def read(self, seen: int):
-        with self.cond:
-            self.cond.wait_for(lambda: self.n != seen)
-            return self.frame, self.n
 
 
 def main():
@@ -172,42 +72,28 @@ def main():
     ap.add_argument("--record", action="store_true", help="save the whole session as a video in clips/")
     ap.add_argument("--cutoff", type=float, default=0.3, help="seconds after shoot the keypoint guess is made")
     ap.add_argument("--predict", action="store_true", help="old mode: robot commits to the keypoint guess at the cutoff instead of reacting")
-    ap.add_argument("--random", action="store_true", help="ignore the trained model and throw randomly")
-    ap.add_argument("--rules", action="store_true", help="referee uses finger rules instead of the hand classifier")
-    ap.add_argument("--hand", nargs="?", const="auto", help="drive the irl hand over usb (port, or leave empty to find it)")
+    ap.add_argument("--random", action="store_true", help="ignore the early guess model and throw randomly")
     args = ap.parse_args()
 
-    ROUNDS.mkdir(parents=True, exist_ok=True)
+    clf = hand.load_classifier()
+    if clf is None:
+        raise SystemExit("no classifier yet. collect bursts then run: .venv/bin/python train.py classifier")
+    hand.ROUNDS.mkdir(parents=True, exist_ok=True)
     counts = count_rounds()
 
-    # legacy
-    hands = mp.solutions.hands.Hands(max_num_hands=1, model_complexity=0,
-                                     min_detection_confidence=0.3, min_tracking_confidence=0.3)
+    import mediapipe as mp
+    hands = hand.tracker()
     draw = mp.solutions.drawing_utils
-    cap = open_camera(args.camera)
-    cam, seen_n = Camera(cap), 0
+    cap = hand.open_camera(args.camera)
+    cam, seen_n = hand.Camera(cap), 0
     boxer = hand.Boxer()
-    clf = None if args.rules else hand.load()
-    print(f"referee: {'hand classifier' if clf else 'finger rules'}")
 
-    model = None
-    weights = HERE / "results" / "predictor.safetensors"
-    if weights.exists() and not args.random:
-        model = Predictor()
-        model.load_weights(str(weights))
-        model.eval()
+    model = None if args.random else hand.load_predictor()
     react = not args.predict
     if react:
         print("robot: reacts to the referee the frame it locks in")
     else:
-        print(f"robot: {'trained model, commits ' + format(args.cutoff, '+.2f') + 's after shoot' if model else 'random'}")
-
-    arm = None
-    if args.hand:
-        from irl.link import Hand
-        arm = Hand(args.hand)
-        arm.pose("paper")
-        print(f"irl hand on {arm.port}")
+        print(f"robot: {'early guess, commits ' + format(args.cutoff, '+.2f') + 's after shoot' if model else 'random'}")
 
     writer = None
     state = "idle"
@@ -216,28 +102,26 @@ def main():
     fps, work, last = 0.0, 0.0, time.perf_counter()
     started = shoot_at = 0.0
     times, frames, crops = [], [], []
-    seen, last_kp, votes = [], None, []
+    last_kp, votes = None, []
     reads, lives, ps = [], [], []
     robot = guess = finish = pick = None
     rnd = {}
 
     def start_round():
-        nonlocal state, started, shoot_at, times, frames, crops, seen, last_kp, votes, robot, guess, finish, pick
+        nonlocal state, started, shoot_at, times, frames, crops, last_kp, votes, robot, guess, finish, pick
         nonlocal reads, lives, ps
         state = "count"
         started = time.perf_counter()
         shoot_at = started + 3 * BEAT
         times, frames, crops = [], [], []
-        seen, last_kp, votes = [], None, []
+        last_kp, votes = None, []
         reads, lives, ps = [], [], []
         robot = guess = finish = pick = None
-        if arm:
-            arm.pose("half")
 
     def save_round():
-        name = f"{args.player}_{int(time.time() * 1000)}.npz"
+        name = f"{args.player}_{int(time.time() * 1000)}"
         np.savez_compressed(
-            ROUNDS / name,
+            hand.ROUNDS / f"{name}.npz",
             t=np.array(times, dtype=np.float32),   # seconds
             kp=np.stack(frames),
             label=rnd["label"], referee=rnd["referee"] or "",
@@ -251,9 +135,10 @@ def main():
         # landed crops
         start = rnd["done_t"] if rnd["done_t"] is not None else args.cutoff
         keep = [c for c, t in zip(crops, times) if t >= start and c is not None][:KEEP]
-        (CROPS / rnd["label"]).mkdir(parents=True, exist_ok=True)
+        out = hand.REAL / rnd["label"]
+        out.mkdir(parents=True, exist_ok=True)
         for i, c in enumerate(keep):
-            cv2.imwrite(str(CROPS / rnd["label"] / f"{name[:-4]}_{i}.jpg"), c)
+            cv2.imwrite(str(out / f"{name}_{i}.jpg"), c)
 
     while True:
         frame, seen_n = cam.read(seen_n)
@@ -264,10 +149,12 @@ def main():
         fps = 0.9 * fps + 0.1 / max(now - last, 1e-6)
         last = now
 
-        kp, res = keypoints(hands, frame)
+        kp, res = hand.keypoints(hands, frame)
         box = boxer.update(kp, frame, now)
         img = hand.crop(frame, box) if box is not None else None
-        live, live_p = see(kp, img, clf)
+        live, live_p = clf(img) if img is not None else (None, None)
+        if live not in MOVES or live_p < SURE:
+            live = None
         if res.multi_hand_landmarks:
             draw.draw_landmarks(frame, res.multi_hand_landmarks[0], mp.solutions.hands.HAND_CONNECTIONS)
         if box is not None:
@@ -290,40 +177,27 @@ def main():
             lost = np.isnan(kp).any()
             if live and t >= 0:
                 votes.append(live)
-            if clf is not None:
-                # held box = assume still
-                still = lost or (last_kp is not None and motion(last_kp, kp) < STILL)
-                if not lost:
-                    last_kp = kp
-                if t >= LOOK_FROM:
-                    reads.append((live, t, still))
-                # 3 of last 4, gaps ok
-                last4 = [r for r in reads[-(STABLE + 1):] if r[0]]
-                moves = [m for m, _, _ in last4]
-                if moves:
-                    top = max(set(moves), key=moves.count)
-                    hits = [r for r in last4 if r[0] == top]
-                    # rock = fist stopped pumping
-                    if len(hits) >= STABLE and (top != "rock" or (t >= ROCK_AFTER and all(r[2] for r in hits))):
-                        landed, land_t = top, hits[0][1]
-            elif not lost:
-                still = last_kp is not None and motion(last_kp, kp) < STILL
-                seen = seen + [(live, t)] if t >= LOOK_FROM and still and live else []
+            # held box = assume still
+            still = lost or (last_kp is not None and motion(last_kp, kp) < STILL)
+            if not lost:
                 last_kp = kp
-                recent = [p for p, _ in seen[-STABLE:]]
-                if len(recent) == STABLE:
-                    top = max(set(recent), key=recent.count)
-                    if recent.count(top) >= STABLE - 1 and (top != "rock" or t >= ROCK_AFTER):  # glitch
-                        landed, land_t = top, seen[-STABLE][1]
+            if t >= LOOK_FROM:
+                reads.append((live, t, still))
+            # 3 of last 4, gaps ok
+            last4 = [r for r in reads[-(STABLE + 1):] if r[0]]
+            moves = [m for m, _, _ in last4]
+            if moves:
+                top = max(set(moves), key=moves.count)
+                hits = [r for r in last4 if r[0] == top]
+                # rock = fist stopped pumping
+                if len(hits) >= STABLE and (top != "rock" or (t >= ROCK_AFTER and all(r[2] for r in hits))):
+                    landed, land_t = top, hits[0][1]
 
             # guess
             if pick is None and t >= args.cutoff:
                 pick, guess = robot_move(model, times, frames, args.cutoff)
                 if not react:
                     robot = pick
-                # head start
-                if arm and finish is None:
-                    arm.pose(pick)
             if robot:
                 put(frame, f"robot: {robot}", 170, 1.4, (120, 200, 255))
 
@@ -338,8 +212,6 @@ def main():
                 rnd = {"referee": finish[0], "label": finish[0], "done_t": finish[1],
                        "robot": robot, "guess": guess, "lock_t": finish[2]}
                 state = "result"
-                if arm:
-                    arm.pose(robot)
 
         elif state == "result":
             if rnd["label"]:
@@ -397,8 +269,6 @@ def main():
             start_round()
 
     cap.release()
-    if arm:
-        arm.close()
     if writer:
         writer.release()
     cv2.destroyAllWindows()

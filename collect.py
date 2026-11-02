@@ -1,37 +1,32 @@
 import argparse
 import time
-from pathlib import Path
 
 import cv2
-import mediapipe as mp
 
 import hand
-from play import keypoints, open_camera, put
+from hand import BURSTS, MOVES, put
 
-HERE = Path(__file__).parent
-CROPS = HERE / "data" / "crops"
 KEYS = {ord("r"): "rock", ord("p"): "paper", ord("s"): "scissors"}
 
 
 def count() -> dict:
-    return {m: len(list((CROPS / m).glob("*.jpg"))) for m in hand.MOVES}
+    return {m: len(list((BURSTS / m).glob("*.jpg"))) for m in MOVES}
 
 
 def main():
-    ap = argparse.ArgumentParser(description="record labelled hand crops for the classifier")
+    ap = argparse.ArgumentParser(description="record bursts of labelled hand crops for the classifier")
     ap.add_argument("--player", default="nav")
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--seconds", type=float, default=4.0, help="how long each burst records")
     args = ap.parse_args()
 
-    for m in hand.MOVES:
-        (CROPS / m).mkdir(parents=True, exist_ok=True)
+    for m in MOVES:
+        (BURSTS / m).mkdir(parents=True, exist_ok=True)
     counts = count()
-    hands = mp.solutions.hands.Hands(max_num_hands=1, model_complexity=0,
-                                     min_detection_confidence=0.3, min_tracking_confidence=0.3)
+    hands = hand.tracker()
     boxer = hand.Boxer()
-    clf = hand.load()
-    cap = open_camera(args.camera)
+    clf = hand.load_classifier()
+    cap = hand.open_camera(args.camera)
     label, burst, until, n = None, 0, 0.0, 0
 
     while True:
@@ -40,12 +35,12 @@ def main():
             raise SystemExit("camera stopped giving frames")
         frame = cv2.flip(frame, 1)
         now = time.perf_counter()
-        kp, _ = keypoints(hands, frame)
+        kp, _ = hand.keypoints(hands, frame)
         box = boxer.update(kp, frame, now)
         img = hand.crop(frame, box) if box is not None else None
 
         if label and now < until and img is not None:
-            cv2.imwrite(str(CROPS / label / f"{args.player}_{burst}_{n:03d}.jpg"), img)
+            cv2.imwrite(str(BURSTS / label / f"{args.player}_{burst}_{n:03d}.jpg"), img)
             n += 1
             counts[label] += 1
         elif label and now >= until:
@@ -65,7 +60,7 @@ def main():
         else:
             put(frame, "hold a move then press r / p / s to record it   q = quit", 60, 0.7)
         c = counts
-        put(frame, f"crops  rock {c['rock']}  paper {c['paper']}  scissors {c['scissors']}",
+        put(frame, f"bursts  rock {c['rock']}  paper {c['paper']}  scissors {c['scissors']}",
             frame.shape[0] - 25, 0.7, (180, 255, 180))
 
         cv2.imshow("lilrps collect", frame)

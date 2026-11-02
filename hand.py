@@ -1,3 +1,5 @@
+import threading
+import time
 from pathlib import Path
 
 import cv2
@@ -5,17 +7,90 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+HERE = Path(__file__).parent
+DATA = HERE / "data"
+BURSTS = DATA / "bursts"  # collect.py
+ROUNDS = DATA / "rounds"  # play.py
+REAL = DATA / "real"      # crops from real rounds
+RESULTS = HERE / "results"
+R18 = RESULTS / "classifier_r18.safetensors"
+PREDICTOR = RESULTS / "predictor.safetensors"
+
 MOVES = ["rock", "paper", "scissors"]
 CLASSES = MOVES + ["none"]
-SAVE = 112   # px stored
-SIZE = 96    # px model
+COUNTER = {"rock": "paper", "paper": "scissors", "scissors": "rock"}  # beats
+
+SAVE = 112   # px
 PAD = 2.2    # box / landmarks
 HOLD = 1.0   # seconds
 SMOOTH = 0.5
-WEIGHTS = Path(__file__).parent / "results" / "classifier.safetensors"
-R18 = Path(__file__).parent / "results" / "classifier_r18.safetensors"
+W = 8        # frames
 MEAN = np.array([0.485, 0.456, 0.406], np.float32)  # imagenet
 STD = np.array([0.229, 0.224, 0.225], np.float32)
+
+
+def open_camera(index: int):
+    cap = cv2.VideoCapture(index)
+    waited = 0
+    while not cap.isOpened() and waited < 30:
+        # permission
+        if waited == 0:
+            print("waiting for camera permission, click allow on the popup...")
+        time.sleep(1)
+        waited += 1
+        cap = cv2.VideoCapture(index)
+    if not cap.isOpened():
+        raise SystemExit("no camera. run this from apple terminal, or check system settings > privacy > camera")
+    cap.set(cv2.CAP_PROP_FPS, 60)
+    print(f"camera says {cap.get(cv2.CAP_PROP_FRAME_WIDTH):.0f}x{cap.get(cv2.CAP_PROP_FRAME_HEIGHT):.0f} at {cap.get(cv2.CAP_PROP_FPS):.0f}fps")
+    return cap
+
+
+class Camera:
+    # own thread so slow frames dont make us miss the next one
+    def __init__(self, cap):
+        self.cap, self.frame, self.n, self.fps = cap, None, 0, 0.0
+        self.cond = threading.Condition()
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def run(self):
+        last = time.perf_counter()
+        while True:
+            ok, f = self.cap.read()
+            now = time.perf_counter()
+            with self.cond:
+                self.fps = 0.9 * self.fps + 0.1 / max(now - last, 1e-6)
+                last = now
+                self.frame, self.n = (f, self.n + 1) if ok else (None, -1)
+                self.cond.notify_all()
+            if not ok:
+                return
+
+    def read(self, seen: int):
+        with self.cond:
+            self.cond.wait_for(lambda: self.n != seen)
+            return self.frame, self.n
+
+
+def tracker():
+    import mediapipe as mp
+    return mp.solutions.hands.Hands(max_num_hands=1, model_complexity=0,
+                                    min_detection_confidence=0.3, min_tracking_confidence=0.3)
+
+
+def keypoints(hands, frame):
+    h, w = frame.shape[:2]
+    res = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    if not res.multi_hand_landmarks:
+        return np.full((21, 3), np.nan, dtype=np.float32), res
+    lm = res.multi_hand_landmarks[0].landmark
+    # aspect
+    return np.array([[p.x * w / h, p.y, p.z] for p in lm], dtype=np.float32), res
+
+
+def put(frame, text, y, scale=1.0, color=(255, 255, 255)):
+    for c, t in (((0, 0, 0), 6), (color, 2)):
+        cv2.putText(frame, text, (30, y), cv2.FONT_HERSHEY_SIMPLEX, scale, c, t, cv2.LINE_AA)
 
 
 # held when lost
@@ -50,32 +125,7 @@ def draw_box(frame: np.ndarray, box, color=(255, 200, 80)):
     cv2.rectangle(frame, (int(cx - half), int(cy - half)), (int(cx + half), int(cy + half)), color, 2)
 
 
-def prep(imgs: np.ndarray) -> mx.array:
-    return mx.array(imgs.astype(np.float32) / 255 - 0.5)
-
-
-def center(imgs: np.ndarray) -> np.ndarray:
-    o = (SAVE - SIZE) // 2
-    return imgs[:, o:o + SIZE, o:o + SIZE]
-
-
-class HandNet(nn.Module):
-    def __init__(self):
-        super().__init__()
-        chans = [3, 24, 48, 96, 160]
-        self.convs = [nn.Conv2d(a, b, 3, padding=1) for a, b in zip(chans, chans[1:])]
-        self.norms = [nn.BatchNorm(b) for b in chans[1:]]
-        self.pool = nn.MaxPool2d(2)
-        self.drop = nn.Dropout(0.3)
-        self.head = nn.Linear(chans[-1], len(MOVES))
-
-    def __call__(self, x):
-        for conv, norm in zip(self.convs, self.norms):
-            x = self.pool(nn.relu(norm(conv(x))))
-        return self.head(self.drop(x.mean(axis=(1, 2))))
-
-
-# pretrained, same names as mlx-image
+# same names as mlx-image
 class Block(nn.Module):
     def __init__(self, a: int, b: int, stride: int):
         super().__init__()
@@ -110,7 +160,7 @@ class ResNet18(nn.Module):
         return self.fc(x.mean(axis=(1, 2)))
 
 
-def prep_r18(imgs: np.ndarray) -> mx.array:
+def prep(imgs: np.ndarray) -> mx.array:
     # bgr
     x = imgs[..., ::-1].astype(np.float32) / 255
     return mx.array((x - MEAN) / STD)
@@ -118,18 +168,50 @@ def prep_r18(imgs: np.ndarray) -> mx.array:
 
 class Classifier:
     def __init__(self):
-        self.r18 = R18.exists()
-        self.net = ResNet18() if self.r18 else HandNet()
-        self.net.load_weights(str(R18 if self.r18 else WEIGHTS))
+        self.net = ResNet18()
+        self.net.load_weights(str(R18))
         self.net.eval()
-        self.names = CLASSES if self.r18 else MOVES
 
     def __call__(self, img: np.ndarray) -> tuple[str, float]:
-        x = prep_r18(img[None]) if self.r18 else prep(center(img[None]))
-        p = mx.softmax(self.net(x), axis=-1)[0]
+        p = mx.softmax(self.net(prep(img[None])), axis=-1)[0]
         i = int(p.argmax().item())
-        return self.names[i], float(p[i].item())
+        return CLASSES[i], float(p[i].item())
 
 
-def load() -> Classifier | None:
-    return Classifier() if R18.exists() or WEIGHTS.exists() else None
+def load_classifier() -> Classifier | None:
+    return Classifier() if R18.exists() else None
+
+
+# early guess from keypoints
+class Predictor(nn.Module):
+    def __init__(self, hidden: int = 64):
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(W * 42, hidden), nn.ReLU(), nn.Dropout(0.2),
+                                 nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, 3))
+
+    def __call__(self, x):
+        return self.net(x)
+
+
+def load_predictor() -> Predictor | None:
+    if not PREDICTOR.exists():
+        return None
+    model = Predictor()
+    model.load_weights(str(PREDICTOR))
+    model.eval()
+    return model
+
+
+def normalise(kp: np.ndarray) -> np.ndarray:
+    xy = kp[:, :2] - kp[0, :2]
+    # head-on
+    scale = max(np.linalg.norm(xy[9]), np.linalg.norm(xy[5] - xy[17]))
+    return (xy / (scale + 1e-6)).ravel()
+
+
+def window(rnd: dict, cutoff: float) -> np.ndarray:
+    seen = [normalise(k) for k, t in zip(rnd["kp"], rnd["t"]) if t <= cutoff and not np.isnan(k).any()][-W:]
+    x = np.zeros((W, 42), dtype=np.float32)
+    if seen:
+        x[W - len(seen):] = np.stack(seen)
+    return x.ravel()
