@@ -1,8 +1,7 @@
 {
-  "hagrid_people": 0.9984472049689441,
-  "nav_bursts": 1.0,
-  "nav_fresh_bursts": 0.0,
-  "nav_real_rounds": 0.5692307692307692,
-  "epochs": 2,
-  "train": 23401
+  "hagrid_people": 0.9994824016563147,
+  "bursts": 0.9617486338797814,
+  "real_rounds": 0.0,
+  "epochs": 8,
+  "train": 21850
 }
