@@ -17,6 +17,7 @@ uv venv -p 3.12 .venv && uv pip install -p .venv -r requirements.txt
 .venv/bin/python collect.py              # record bursts of ur hand
 .venv/bin/python train.py classifier     # train on them
 .venv/bin/python play.py                 # play
+.venv/bin/python play.py --wheel         # play against the wheel on the pi
 ```
 
 ## what im doing

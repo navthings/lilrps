@@ -1,5 +1,5 @@
 .venv/
 clips/
+data/
 __pycache__/
 .DS_Store
-data/hagrid/
