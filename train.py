@@ -213,8 +213,8 @@ def cmd_classifier(args):
         h_acc = acc(model, h_imgs[h_val], h_ys[h_val])
         b_acc = acc(model, b_imgs[b_va], b_ys[b_va])
         r_acc = acc(model, r_imgs, r_ys)
-        print(f"epoch {epoch}  loss {np.mean(losses):.3f}  hagrid people {h_acc:.1%}  your bursts {b_acc:.1%}  "
-              f"your real rounds {r_acc:.1%}  ({time.time() - t0:.0f}s)", flush=True)
+        print(f"epoch {epoch}  loss {np.mean(losses):.3f}  hagrid people {h_acc:.1%}  my bursts {b_acc:.1%}  "
+              f"my real rounds {r_acc:.1%}  ({time.time() - t0:.0f}s)", flush=True)
         # real rounds stay a pure test
         score = np.nanmean([h_acc, b_acc])
         if score >= best:
@@ -224,8 +224,8 @@ def cmd_classifier(args):
     model.load_weights(list(best_w.items()))
     res = {
         "hagrid_people": show("hagrid, people it never saw", model, h_imgs[h_val], h_ys[h_val]),
-        "bursts": show("your bursts it never saw", model, b_imgs[b_va], b_ys[b_va]),
-        "real_rounds": show("your crops from real rounds (never trained on)", model, r_imgs, r_ys),
+        "bursts": show("my bursts it never saw", model, b_imgs[b_va], b_ys[b_va]),
+        "real_rounds": show("my crops from real rounds (never trained on)", model, r_imgs, r_ys),
     }
     RESULTS.mkdir(exist_ok=True)
     model.save_weights(str(hand.R18))
@@ -330,7 +330,7 @@ def cmd_predictor(args):
     print("\nseconds after shoot -> accuracy")
     for c, a in zip(EVAL_AT, mean):
         print(f"  {c:+.1f}s  {a:.0%}")
-    print(f"guessing the most common move gets {counts.max() / counts.sum():.0%}, your hand lands at {landed:+.2f}s")
+    print(f"guessing the most common move gets {counts.max() / counts.sum():.0%}, my hand lands at {landed:+.2f}s")
     print(f"same rounds tilted 60deg toward the camera (fake head-on): {head_on.mean():.0%} after landing")
 
     (RESULTS / "accuracy.json").write_text(json.dumps({
@@ -345,7 +345,7 @@ def cmd_predictor(args):
     ax.axvline(0, color="black", lw=1)
     ax.axvline(landed, ls=":", color="#1d4ed8", label=f"median hand lands ({landed:+.2f}s)")
     ax.set(xlabel="seconds after \"shoot\" the model stops looking", ylabel="accuracy (%)", ylim=(0, 100),
-           title=f"how early lilrps reads your throw ({len(rounds)} rounds)")
+           title=f"how early lilrps reads my throw ({len(rounds)} rounds)")
     ax.legend(loc="lower right")
     fig.tight_layout()
     fig.savefig(RESULTS / "accuracy.png", dpi=150)
@@ -472,20 +472,20 @@ def main():
     p.add_argument("--per-move", type=int, default=4000)
     p.add_argument("--none", type=int, default=5000)
 
-    p = sub.add_parser("classifier", help="fine-tune resnet18 on hagrid + your bursts (rock / paper / scissors / none)")
+    p = sub.add_parser("classifier", help="fine-tune resnet18 on hagrid + my bursts (rock / paper / scissors / none)")
     p.add_argument("--epochs", type=int, default=8)
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--lr", type=float, default=3e-4)
-    p.add_argument("--repeat", type=int, default=3, help="how many times each of your crops shows up per epoch")
+    p.add_argument("--repeat", type=int, default=3, help="how many times each of my crops shows up per epoch")
     p.add_argument("--all", action="store_true", help="train on every burst (held-out numbers become train numbers)")
 
-    p = sub.add_parser("predictor", help="train the early guess and see how soon it reads your throw")
+    p = sub.add_parser("predictor", help="train the early guess and see how soon it reads my throw")
     p.add_argument("--folds", type=int, default=5)
     p.add_argument("--steps", type=int, default=400)
     p.add_argument("--aug", type=int, default=2, help="extra tilted copies of each round, so it learns head-on hands")
 
     sub.add_parser("web", help="export the classifier to onnx for the browser version")
-    sub.add_parser("stats", help="guess mode vs react mode on your saved rounds")
+    sub.add_parser("stats", help="guess mode vs react mode on my saved rounds")
 
     args = ap.parse_args()
     {"hagrid": cmd_hagrid, "classifier": cmd_classifier, "predictor": cmd_predictor,
