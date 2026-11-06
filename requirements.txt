@@ -4,3 +4,4 @@ numpy
 mlx
 matplotlib
 onnx
+protobuf<5
